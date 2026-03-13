@@ -1,0 +1,142 @@
+# Example .dbt-governance.yml for the Jaffle Shop project
+version: 1
+
+project:
+  name: "Jaffle Shop"
+  description: "Governance rules for the Jaffle Shop demo project"
+
+dbt_cloud:
+  enabled: false
+  # account_id: 12345
+  # environment_id: 67890
+  # discovery_api_url: "https://metadata.cloud.getdbt.com/graphql"
+
+global:
+  severity_default: warning
+  fail_on: error
+  changed_files_only: false
+  exclude_paths:
+    - "dbt_packages/"
+    - "target/"
+
+naming:
+  enabled: true
+  rules:
+    staging_prefix:
+      enabled: true
+      severity: error
+    intermediate_prefix:
+      enabled: true
+      severity: error
+    marts_prefix:
+      enabled: true
+      severity: error
+    source_schema_required:
+      enabled: true
+      severity: warning
+    model_file_matches_name:
+      enabled: true
+      severity: error
+
+structure:
+  enabled: true
+  rules:
+    staging_refs_source_only:
+      enabled: true
+      severity: error
+    marts_no_source_refs:
+      enabled: true
+      severity: error
+    no_cross_layer_skipping:
+      enabled: true
+      severity: warning
+    max_dag_depth:
+      enabled: true
+      severity: warning
+      max_depth: 8
+    max_fanout:
+      enabled: true
+      severity: warning
+      max_children: 10
+    no_orphan_models:
+      enabled: true
+      severity: info
+    no_rejoin_patterns:
+      enabled: true
+      severity: warning
+    model_directories_match_layers:
+      enabled: true
+      severity: error
+
+testing:
+  enabled: true
+  rules:
+    primary_key_test_required:
+      enabled: true
+      severity: error
+    minimum_test_coverage:
+      enabled: true
+      severity: warning
+      min_tests_per_model: 2
+    staging_freshness_required:
+      enabled: true
+      severity: warning
+    marts_have_contract:
+      enabled: true
+      severity: info
+    no_disabled_tests:
+      enabled: true
+      severity: warning
+
+documentation:
+  enabled: true
+  rules:
+    model_description_required:
+      enabled: true
+      severity: error
+      layers:
+        - marts
+        - intermediate
+    column_description_required:
+      enabled: true
+      severity: warning
+      layers:
+        - marts
+    source_description_required:
+      enabled: true
+      severity: warning
+    schema_yml_exists:
+      enabled: true
+      severity: error
+
+materialization:
+  enabled: true
+  rules:
+    staging_must_be_view:
+      enabled: true
+      severity: warning
+    incremental_must_have_unique_key:
+      enabled: true
+      severity: error
+    incremental_must_have_on_schema_change:
+      enabled: true
+      severity: warning
+
+style:
+  enabled: true
+  rules:
+    cte_pattern:
+      enabled: true
+      severity: warning
+    no_hardcoded_schema:
+      enabled: true
+      severity: error
+    no_select_star_in_marts:
+      enabled: true
+      severity: warning
+    final_select_from_named_cte:
+      enabled: true
+      severity: warning
+    refs_in_ctes_not_inline:
+      enabled: true
+      severity: warning

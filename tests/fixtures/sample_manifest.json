@@ -1,0 +1,228 @@
+{
+  "metadata": {
+    "dbt_schema_version": "https://schemas.getdbt.com/dbt/manifest/v11/manifest.json",
+    "dbt_version": "1.8.0",
+    "generated_at": "2026-03-12T10:00:00Z",
+    "project_name": "jaffle_shop"
+  },
+  "nodes": {
+    "model.jaffle_shop.stg_jaffle_shop__customers": {
+      "unique_id": "model.jaffle_shop.stg_jaffle_shop__customers",
+      "name": "stg_jaffle_shop__customers",
+      "resource_type": "model",
+      "original_file_path": "models/staging/jaffle_shop/stg_jaffle_shop__customers.sql",
+      "path": "staging/jaffle_shop/stg_jaffle_shop__customers.sql",
+      "schema": "staging",
+      "database": "analytics",
+      "description": "Staged customer data from jaffle_shop source",
+      "columns": {
+        "customer_id": {"name": "customer_id", "description": "Primary key", "data_type": "integer"},
+        "first_name": {"name": "first_name", "description": "Customer first name", "data_type": "varchar"},
+        "last_name": {"name": "last_name", "description": "", "data_type": "varchar"}
+      },
+      "config": {"materialized": "view"},
+      "depends_on": {"nodes": ["source.jaffle_shop.jaffle_shop.customers"]},
+      "tags": [],
+      "meta": {"owner": "analytics-team"},
+      "raw_code": "with\n\nsource as (\n    select * from {{ source('jaffle_shop', 'customers') }}\n),\n\nrenamed as (\n    select\n        id as customer_id,\n        first_name,\n        last_name\n    from source\n)\n\nselect * from renamed",
+      "access": "protected",
+      "group": null
+    },
+    "model.jaffle_shop.stg_jaffle_shop__orders": {
+      "unique_id": "model.jaffle_shop.stg_jaffle_shop__orders",
+      "name": "stg_jaffle_shop__orders",
+      "resource_type": "model",
+      "original_file_path": "models/staging/jaffle_shop/stg_jaffle_shop__orders.sql",
+      "path": "staging/jaffle_shop/stg_jaffle_shop__orders.sql",
+      "schema": "staging",
+      "database": "analytics",
+      "description": "Staged order data",
+      "columns": {},
+      "config": {"materialized": "view"},
+      "depends_on": {"nodes": ["source.jaffle_shop.jaffle_shop.orders"]},
+      "tags": [],
+      "meta": {"owner": "analytics-team"},
+      "raw_code": "select\n    id as order_id,\n    user_id as customer_id,\n    order_date,\n    status\nfrom {{ source('jaffle_shop', 'orders') }}",
+      "access": "protected",
+      "group": null
+    },
+    "model.jaffle_shop.stg_stripe__payments": {
+      "unique_id": "model.jaffle_shop.stg_stripe__payments",
+      "name": "stg_stripe__payments",
+      "resource_type": "model",
+      "original_file_path": "models/staging/stripe/stg_stripe__payments.sql",
+      "path": "staging/stripe/stg_stripe__payments.sql",
+      "schema": "staging",
+      "database": "analytics",
+      "description": "",
+      "columns": {},
+      "config": {"materialized": "view"},
+      "depends_on": {"nodes": ["source.jaffle_shop.stripe.payments"]},
+      "tags": [],
+      "meta": {},
+      "raw_code": "select\n    id as payment_id,\n    order_id,\n    payment_method,\n    amount / 100 as amount\nfrom {{ source('stripe', 'payments') }}",
+      "access": "protected",
+      "group": null
+    },
+    "model.jaffle_shop.int_payments_pivoted_to_orders": {
+      "unique_id": "model.jaffle_shop.int_payments_pivoted_to_orders",
+      "name": "int_payments_pivoted_to_orders",
+      "resource_type": "model",
+      "original_file_path": "models/intermediate/finance/int_payments_pivoted_to_orders.sql",
+      "path": "intermediate/finance/int_payments_pivoted_to_orders.sql",
+      "schema": "intermediate",
+      "database": "analytics",
+      "description": "Payments pivoted to the order grain with payment method breakdowns",
+      "columns": {},
+      "config": {"materialized": "view"},
+      "depends_on": {"nodes": ["model.jaffle_shop.stg_stripe__payments"]},
+      "tags": [],
+      "meta": {"owner": "finance-team"},
+      "raw_code": "with\n\npayments as (\n    select * from {{ ref('stg_stripe__payments') }}\n),\n\npivoted as (\n    select\n        order_id,\n        sum(case when payment_method = 'credit_card' then amount else 0 end) as credit_card_amount,\n        sum(case when payment_method = 'coupon' then amount else 0 end) as coupon_amount,\n        sum(amount) as total_amount\n    from payments\n    group by 1\n)\n\nselect * from pivoted",
+      "access": "protected",
+      "group": null
+    },
+    "model.jaffle_shop.fct_orders": {
+      "unique_id": "model.jaffle_shop.fct_orders",
+      "name": "fct_orders",
+      "resource_type": "model",
+      "original_file_path": "models/marts/finance/fct_orders.sql",
+      "path": "marts/finance/fct_orders.sql",
+      "schema": "marts",
+      "database": "analytics",
+      "description": "Order fact table with payment information",
+      "columns": {
+        "order_id": {"name": "order_id", "description": "Primary key", "data_type": "integer"},
+        "customer_id": {"name": "customer_id", "description": "", "data_type": "integer"},
+        "order_date": {"name": "order_date", "description": "Date the order was placed", "data_type": "date"},
+        "total_amount": {"name": "total_amount", "description": "", "data_type": "numeric"}
+      },
+      "config": {"materialized": "table"},
+      "depends_on": {"nodes": [
+        "model.jaffle_shop.stg_jaffle_shop__orders",
+        "model.jaffle_shop.int_payments_pivoted_to_orders"
+      ]},
+      "tags": [],
+      "meta": {"owner": "finance-team"},
+      "raw_code": "with\n\norders as (\n    select * from {{ ref('stg_jaffle_shop__orders') }}\n),\n\npayments as (\n    select * from {{ ref('int_payments_pivoted_to_orders') }}\n),\n\njoined as (\n    select\n        orders.order_id,\n        orders.customer_id,\n        orders.order_date,\n        orders.status,\n        payments.total_amount,\n        payments.credit_card_amount,\n        payments.coupon_amount\n    from orders\n    left join payments on orders.order_id = payments.order_id\n)\n\nselect * from joined",
+      "access": "public",
+      "group": "finance"
+    },
+    "model.jaffle_shop.dim_customers": {
+      "unique_id": "model.jaffle_shop.dim_customers",
+      "name": "dim_customers",
+      "resource_type": "model",
+      "original_file_path": "models/marts/marketing/dim_customers.sql",
+      "path": "marts/marketing/dim_customers.sql",
+      "schema": "marts",
+      "database": "analytics",
+      "description": "",
+      "columns": {},
+      "config": {"materialized": "table"},
+      "depends_on": {"nodes": [
+        "model.jaffle_shop.stg_jaffle_shop__customers",
+        "model.jaffle_shop.fct_orders"
+      ]},
+      "tags": [],
+      "meta": {},
+      "raw_code": "with\n\ncustomers as (\n    select * from {{ ref('stg_jaffle_shop__customers') }}\n),\n\norders as (\n    select * from {{ ref('fct_orders') }}\n),\n\naggregated as (\n    select\n        customers.customer_id,\n        customers.first_name,\n        customers.last_name,\n        count(orders.order_id) as order_count,\n        sum(orders.total_amount) as lifetime_value\n    from customers\n    left join orders on customers.customer_id = orders.customer_id\n    group by 1, 2, 3\n)\n\nselect * from aggregated",
+      "access": "public",
+      "group": null
+    },
+    "model.jaffle_shop.bad_model_no_prefix": {
+      "unique_id": "model.jaffle_shop.bad_model_no_prefix",
+      "name": "bad_model_no_prefix",
+      "resource_type": "model",
+      "original_file_path": "models/staging/jaffle_shop/bad_model_no_prefix.sql",
+      "path": "staging/jaffle_shop/bad_model_no_prefix.sql",
+      "schema": "staging",
+      "database": "analytics",
+      "description": "",
+      "columns": {},
+      "config": {"materialized": "table"},
+      "depends_on": {"nodes": ["model.jaffle_shop.stg_jaffle_shop__customers"]},
+      "tags": [],
+      "meta": {},
+      "raw_code": "select * from {{ ref('stg_jaffle_shop__customers') }}",
+      "access": "protected",
+      "group": null
+    },
+    "test.jaffle_shop.unique_stg_jaffle_shop__customers_customer_id": {
+      "unique_id": "test.jaffle_shop.unique_stg_jaffle_shop__customers_customer_id",
+      "name": "unique_stg_jaffle_shop__customers_customer_id",
+      "resource_type": "test",
+      "test_metadata": {"name": "unique"},
+      "column_name": "customer_id",
+      "depends_on": {"nodes": ["model.jaffle_shop.stg_jaffle_shop__customers"]}
+    },
+    "test.jaffle_shop.not_null_stg_jaffle_shop__customers_customer_id": {
+      "unique_id": "test.jaffle_shop.not_null_stg_jaffle_shop__customers_customer_id",
+      "name": "not_null_stg_jaffle_shop__customers_customer_id",
+      "resource_type": "test",
+      "test_metadata": {"name": "not_null"},
+      "column_name": "customer_id",
+      "depends_on": {"nodes": ["model.jaffle_shop.stg_jaffle_shop__customers"]}
+    },
+    "test.jaffle_shop.unique_fct_orders_order_id": {
+      "unique_id": "test.jaffle_shop.unique_fct_orders_order_id",
+      "name": "unique_fct_orders_order_id",
+      "resource_type": "test",
+      "test_metadata": {"name": "unique"},
+      "column_name": "order_id",
+      "depends_on": {"nodes": ["model.jaffle_shop.fct_orders"]}
+    },
+    "test.jaffle_shop.not_null_fct_orders_order_id": {
+      "unique_id": "test.jaffle_shop.not_null_fct_orders_order_id",
+      "name": "not_null_fct_orders_order_id",
+      "resource_type": "test",
+      "test_metadata": {"name": "not_null"},
+      "column_name": "order_id",
+      "depends_on": {"nodes": ["model.jaffle_shop.fct_orders"]}
+    }
+  },
+  "sources": {
+    "source.jaffle_shop.jaffle_shop.customers": {
+      "unique_id": "source.jaffle_shop.jaffle_shop.customers",
+      "name": "customers",
+      "source_name": "jaffle_shop",
+      "description": "Raw customer data from the jaffle shop application database",
+      "schema": "raw_jaffle_shop",
+      "database": "analytics",
+      "loaded_at_field": "updated_at",
+      "tags": [],
+      "meta": {}
+    },
+    "source.jaffle_shop.jaffle_shop.orders": {
+      "unique_id": "source.jaffle_shop.jaffle_shop.orders",
+      "name": "orders",
+      "source_name": "jaffle_shop",
+      "description": "Raw order data",
+      "schema": "raw_jaffle_shop",
+      "database": "analytics",
+      "loaded_at_field": null,
+      "tags": [],
+      "meta": {}
+    },
+    "source.jaffle_shop.stripe.payments": {
+      "unique_id": "source.jaffle_shop.stripe.payments",
+      "name": "payments",
+      "source_name": "stripe",
+      "description": "",
+      "schema": "raw_stripe",
+      "database": "analytics",
+      "loaded_at_field": null,
+      "tags": [],
+      "meta": {}
+    }
+  },
+  "exposures": {
+    "exposure.jaffle_shop.weekly_revenue_dashboard": {
+      "unique_id": "exposure.jaffle_shop.weekly_revenue_dashboard",
+      "name": "weekly_revenue_dashboard",
+      "description": "Weekly revenue dashboard in Looker",
+      "depends_on": {"nodes": ["model.jaffle_shop.fct_orders"]},
+      "owner": {"name": "Finance Team", "email": "finance@acme.com"}
+    }
+  },
+  "metrics": {}
+}
