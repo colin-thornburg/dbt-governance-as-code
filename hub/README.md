@@ -12,7 +12,7 @@ Visual configurator for dbt governance standards. Configure rules with checkboxe
 ## Run locally
 
 ```bash
-cd guild-ui
+cd hub
 npm install
 npm run dev
 # Opens at http://localhost:3000

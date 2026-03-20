@@ -75,10 +75,10 @@ Central Governance UI          downloads 3 config files
 
 ### Step 1 — Configure with the Central Governance UI
 
-Open the [Central Governance UI](guild-ui/) locally:
+Open the [Central Governance UI](hub/) locally:
 
 ```bash
-cd guild-ui
+cd hub
 npm install
 npm run dev
 # Opens at http://localhost:3000
@@ -315,7 +315,7 @@ dbt-governance version
 
 ## Configuration reference
 
-The full configuration lives in `.dbt-governance.yml`. Generate a default with `dbt-governance init`, or use the [Central Governance UI](guild-ui/) for a visual editor.
+The full configuration lives in `.dbt-governance.yml`. Generate a default with `dbt-governance init`, or use the [Central Governance UI](hub/) for a visual editor.
 
 ```yaml
 version: 1
@@ -386,7 +386,7 @@ dbt-governance scan
 ### Running the Central Governance UI locally
 
 ```bash
-cd guild-ui
+cd hub
 npm install
 npm run dev
 # Opens at http://localhost:3000

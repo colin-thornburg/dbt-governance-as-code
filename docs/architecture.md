@@ -135,7 +135,7 @@ The same standards drive both the deterministic scan and the AI-powered review.
 Give platform teams a **zero-YAML** way to define and tweak governance rules. Checkboxes, dropdowns, and simple inputs — no need to understand the config schema.
 
 ### Implementation
-Static Next.js app (`guild-ui/`). No backend required — all config generation happens client-side. Platform team configures in browser, downloads three files, commits them to the dbt repo.
+Static Next.js app (`hub/`). No backend required — all config generation happens client-side. Platform team configures in browser, downloads three files, commits them to the dbt repo.
 
 ---
 
@@ -144,7 +144,7 @@ Static Next.js app (`guild-ui/`). No backend required — all config generation 
 ### Flow 1: Set Up Standards (First Time)
 
 ```
-1. Open the Central Governance UI (cd guild-ui && npm run dev)
+1. Open the Central Governance UI (cd hub && npm run dev)
 2. Connect dbt Cloud (API token, account ID, environment ID) via Settings
 3. Toggle rules on/off, set severities, adjust numeric thresholds
 4. Download .dbt-governance.yml, REVIEW.md, and CLAUDE.md
