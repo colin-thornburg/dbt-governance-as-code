@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 from pydantic import BaseModel, Field
 
+from dbt_governance.ai.engine import AIReviewEngine, TokenUsage
 from dbt_governance.cloud.client import CloudHTTPClient
 from dbt_governance.cloud.discovery import DiscoveryClient
 from dbt_governance.cloud.models import ManifestData
@@ -49,6 +50,7 @@ class ScanResult(BaseModel):
     is_cloud_mode: bool = False
     summary: ScanSummary = Field(default_factory=ScanSummary)
     violations: list[Violation] = Field(default_factory=list)
+    token_usage: TokenUsage | None = None
 
 
 CATEGORY_WEIGHTS = {
@@ -83,6 +85,7 @@ def run_scan(
     sql_files: dict[str, str] | None = None,
     schema_files: dict[str, dict] | None = None,
     project_config: dict | None = None,
+    with_ai: bool = False,
 ) -> ScanResult:
     """Run a governance scan and return results.
 
@@ -133,6 +136,13 @@ def run_scan(
         rule_violations = rule.evaluate(context)
         violations.extend(rule_violations)
 
+    # AI semantic review (optional, runs after deterministic rules)
+    token_usage: TokenUsage | None = None
+    if with_ai or config.ai_review.enabled:
+        engine = AIReviewEngine(config)
+        ai_violations, token_usage = asyncio.run(engine.review_all(manifest_data))
+        violations.extend(ai_violations)
+
     errors = sum(1 for v in violations if v.severity == Severity.ERROR)
     warnings = sum(1 for v in violations if v.severity == Severity.WARNING)
     infos = sum(1 for v in violations if v.severity == Severity.INFO)
@@ -155,6 +165,7 @@ def run_scan(
             category_scores=category_scores,
         ),
         violations=violations,
+        token_usage=token_usage,
     )
 
 

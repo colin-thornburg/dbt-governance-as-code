@@ -135,6 +135,33 @@ class DbtCloudConfig(BaseModel):
     include_catalog: bool = True
     include_execution_info: bool = True
 
+    @model_validator(mode="after")
+    def apply_env_defaults(self) -> "DbtCloudConfig":
+        """Fill unset fields from environment variables (e.g. from .env)."""
+        import os
+
+        if self.account_id is None:
+            raw = os.environ.get("DBT_CLOUD_ACCOUNT_ID")
+            if raw:
+                self.account_id = int(raw)
+
+        if self.environment_id is None:
+            raw = os.environ.get("DBT_CLOUD_ENVIRONMENT_ID")
+            if raw:
+                self.environment_id = int(raw)
+
+        if os.environ.get("DBT_CLOUD_URL") and self.api_base_url == "https://cloud.getdbt.com":
+            self.api_base_url = os.environ["DBT_CLOUD_URL"].rstrip("/")
+
+        if os.environ.get("DBT_CLOUD_DISCOVERY_API_URL") and self.discovery_api_url == "https://metadata.cloud.getdbt.com/graphql":
+            self.discovery_api_url = os.environ["DBT_CLOUD_DISCOVERY_API_URL"]
+
+        # Auto-enable when account_id is available and nothing explicitly set enabled=False
+        if self.account_id and not self.enabled:
+            self.enabled = True
+
+        return self
+
 
 class ProjectConfig(BaseModel):
     name: str = "dbt Project"

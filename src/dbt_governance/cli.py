@@ -58,6 +58,7 @@ def scan(
             manifest_path=manifest,
             cloud_mode=cloud_mode,
             rule_categories=rule_categories,
+            with_ai=with_ai,
         )
     except FileNotFoundError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")

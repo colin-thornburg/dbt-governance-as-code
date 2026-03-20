@@ -107,4 +107,29 @@ def print_results(result: ScanResult) -> None:
             border_style=color,
         )
     )
+
+    if result.token_usage and result.token_usage.models_reviewed > 0:
+        u = result.token_usage
+        usage_grid = Table.grid(padding=(0, 3))
+        usage_grid.add_column()
+        usage_grid.add_column()
+        usage_grid.add_column()
+        usage_grid.add_column()
+        usage_grid.add_row(
+            f"Provider: [cyan]{u.provider}[/cyan]",
+            f"Model: [cyan]{u.model}[/cyan]",
+            f"Models reviewed: [bold]{u.models_reviewed}[/bold]",
+            "",
+        )
+        cost_str = f"Est. cost: [bold]${u.estimated_cost_usd:.4f}[/bold]" if u.estimated_cost_usd else ""
+        usage_grid.add_row(
+            f"Input:  [bold]{u.input_tokens:,}[/bold] tokens",
+            f"Output: [bold]{u.output_tokens:,}[/bold] tokens",
+            f"Total:  [bold]{u.total_tokens:,}[/bold] tokens",
+            cost_str,
+        )
+        console.print(
+            Panel(usage_grid, title="[dim]AI Review — Token Usage[/dim]", border_style="dim")
+        )
+
     console.print()

@@ -34,13 +34,15 @@ dependencies = [
 
 [project.optional-dependencies]
 ai = ["anthropic>=0.39.0"]
+openai = ["openai>=1.50.0"]
+gemini = ["google-genai>=1.0.0"]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
     "respx>=0.21.0",
     "ruff>=0.8.0",
 ]
-all = ["dbt-governance[ai,dev]"]
+all = ["dbt-governance[ai,openai,gemini,dev]"]
 
 [project.scripts]
 dbt-governance = "dbt_governance.cli:app"
