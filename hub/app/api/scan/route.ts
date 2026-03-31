@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { execFile } from "child_process";
-import { writeFile, unlink } from "fs/promises";
+import { writeFile, unlink, readFile } from "fs/promises";
 import { tmpdir } from "os";
-import { join } from "path";
+import { join, resolve } from "path";
 import { promisify } from "util";
 
 const execFileAsync = promisify(execFile);
@@ -36,12 +36,31 @@ export async function POST(request: NextRequest) {
       args.push("--with-ai");
     }
 
+    const projectRoot = resolve(process.cwd(), "..");
+    const env = { ...process.env };
+    for (const candidate of [resolve(projectRoot, ".env"), resolve(process.cwd(), ".env")]) {
+      try {
+        const content = await readFile(candidate, "utf8");
+        for (const line of content.split("\n")) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith("#")) continue;
+          const eqIdx = trimmed.indexOf("=");
+          if (eqIdx > 0) {
+            const key = trimmed.slice(0, eqIdx).trim();
+            const val = trimmed.slice(eqIdx + 1).trim();
+            if (val && !env[key]) env[key] = val;
+          }
+        }
+      } catch { /* file not found */ }
+    }
+
     let stdout = "";
     let exitCode = 0;
 
     try {
       const result = await execFileAsync("dbt-governance", args, {
-        env: process.env,
+        env,
+        cwd: projectRoot,
         timeout: 120_000,
         maxBuffer: 10 * 1024 * 1024,
       });

@@ -12,7 +12,9 @@ from dbt_governance.scanner import ScanResult
 import dbt_governance.rules.documentation  # noqa: F401
 import dbt_governance.rules.governance  # noqa: F401
 import dbt_governance.rules.materialization  # noqa: F401
+import dbt_governance.rules.migration  # noqa: F401
 import dbt_governance.rules.naming  # noqa: F401
+import dbt_governance.rules.reuse  # noqa: F401
 import dbt_governance.rules.structure  # noqa: F401
 import dbt_governance.rules.style  # noqa: F401
 import dbt_governance.rules.testing  # noqa: F401
@@ -84,11 +86,7 @@ def to_sarif(result: ScanResult, *, working_directory: str | None = None) -> str
             },
         }
         if violation.suggestion:
-            entry["fixes"] = [
-                {
-                    "description": {"text": violation.suggestion},
-                }
-            ]
+            entry["properties"]["suggestion"] = violation.suggestion
 
         location = _result_location(violation.file_path, violation.line_number)
         if location:

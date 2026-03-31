@@ -14,7 +14,8 @@ from rich.console import Console
 
 from dbt_governance import __version__
 from dbt_governance.config import Severity, generate_default_config, load_config
-from dbt_governance.generators import write_claude_md, write_review_md
+from dbt_governance.generators import write_claude_md, write_review_md, write_reuse_md
+from dbt_governance.output.github import publish_github_check
 from dbt_governance.output.json_report import write_json
 from dbt_governance.output.sarif import to_sarif, write_sarif
 from dbt_governance.output.terminal import print_results
@@ -35,10 +36,13 @@ app.add_typer(generate_app, name="generate")
 def scan(
     config: Optional[str] = typer.Option(None, "--config", "-c", help="Path to .dbt-governance.yml"),
     manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to local manifest.json"),
+    project_dir: str = typer.Option(".", "--project-dir", help="Root directory of the dbt project checkout"),
     cloud: bool = typer.Option(False, "--cloud", help="Force dbt Cloud API mode"),
     local: bool = typer.Option(False, "--local", help="Force local manifest mode"),
+    changed_only: bool = typer.Option(False, "--changed-only", help="Only report violations for changed files"),
     rules: Optional[str] = typer.Option(None, "--rules", "-r", help="Comma-separated rule categories to run"),
     with_ai: bool = typer.Option(False, "--with-ai", help="Enable AI semantic review"),
+    github_annotate: bool = typer.Option(False, "--github-annotate", help="Publish GitHub Check annotations"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Output format: json, sarif"),
     output_file: Optional[str] = typer.Option(None, "--output-file", help="Write output to file"),
     fail_under: Optional[float] = typer.Option(None, "--fail-under", help="Fail if governance score is below this"),
@@ -58,6 +62,8 @@ def scan(
             manifest_path=manifest,
             cloud_mode=cloud_mode,
             rule_categories=rule_categories,
+            project_dir=project_dir,
+            changed_only=changed_only,
             with_ai=with_ai,
         )
     except FileNotFoundError as e:
@@ -72,15 +78,23 @@ def scan(
             write_json(result, output_file)
             console.print(f"[green]JSON report written to {output_file}[/green]")
         else:
-            console.print(result.model_dump_json(indent=2))
+            print(result.model_dump_json(indent=2))
     elif output == "sarif" or (output_file and output_file.endswith(".sarif")):
         if output_file:
             write_sarif(result, output_file)
             console.print(f"[green]SARIF report written to {output_file}[/green]")
         else:
-            console.print(to_sarif(result))
+            print(to_sarif(result))
     else:
         print_results(result)
+
+    if github_annotate:
+        try:
+            check_url = publish_github_check(result)
+            console.print(f"[green]GitHub Check published: {check_url}[/green]")
+        except EnvironmentError as e:
+            console.print(f"[bold red]Error:[/bold red] {e}")
+            raise typer.Exit(1)
 
     if output_file and output == "json":
         pass
@@ -131,7 +145,16 @@ def validate_config(
         console.print(f"  Project: {cfg.project.name}")
         console.print(f"  dbt Cloud: {'enabled' if cfg.dbt_cloud.enabled else 'disabled'}")
         enabled_categories = []
-        for cat in ["naming", "structure", "testing", "documentation", "materialization", "style"]:
+        for cat in [
+            "naming",
+            "structure",
+            "testing",
+            "documentation",
+            "materialization",
+            "style",
+            "migration",
+            "reuse",
+        ]:
             cat_config = getattr(cfg, cat, None)
             if cat_config and cat_config.enabled:
                 rule_count = len(cat_config.rules) if hasattr(cat_config, "rules") else 0
@@ -160,6 +183,8 @@ def list_rules():
     import dbt_governance.rules.materialization  # noqa: F401
     import dbt_governance.rules.style  # noqa: F401
     import dbt_governance.rules.governance  # noqa: F401
+    import dbt_governance.rules.migration  # noqa: F401
+    import dbt_governance.rules.reuse  # noqa: F401
 
     from rich.table import Table
 
@@ -258,6 +283,42 @@ def generate_claude_md_command(
     """Generate CLAUDE.md from governance config."""
     try:
         path = write_claude_md(config_path=config, output_path=output)
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise typer.Exit(1)
+
+    console.print(f"[green]Created {path}[/green]")
+
+
+@generate_app.command("reuse-md")
+def generate_reuse_md_command(
+    config: Optional[str] = typer.Option(None, "--config", "-c", help="Path to .dbt-governance.yml"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to local manifest.json"),
+    project_dir: str = typer.Option(".", "--project-dir", help="Root directory of the dbt project checkout"),
+    cloud: bool = typer.Option(False, "--cloud", help="Force dbt Cloud API mode"),
+    local: bool = typer.Option(False, "--local", help="Force local manifest mode"),
+    changed_only: bool = typer.Option(False, "--changed-only", help="Only report violations for changed files"),
+    with_ai: bool = typer.Option(False, "--with-ai", help="Enable AI semantic review"),
+    output: str = typer.Option("REUSE_REPORT.md", "--output", "-o", help="Output file path"),
+):
+    """Generate a ranked reuse remediation markdown report from a scan."""
+    cloud_mode: bool | None = None
+    if cloud:
+        cloud_mode = True
+    elif local:
+        cloud_mode = False
+
+    try:
+        result = run_scan(
+            config_path=config,
+            manifest_path=manifest,
+            cloud_mode=cloud_mode,
+            project_dir=project_dir,
+            changed_only=changed_only,
+            rule_categories=["reuse"],
+            with_ai=with_ai,
+        )
+        path = write_reuse_md(result, output_path=output)
     except Exception as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         raise typer.Exit(1)

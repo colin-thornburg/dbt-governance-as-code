@@ -5,7 +5,9 @@ Visual configurator for dbt governance standards. Configure rules with checkboxe
 ## What it does
 
 - Configure all governance rule categories (naming, structure, testing, documentation, materialization, style, migration, re-use) via a visual UI — no YAML editing required
+- Tune re-use similarity scoring with guided presets, clear confidence bands, cluster recommendations, and a ranked action queue for multi-model consolidation opportunities
 - Preview `.dbt-governance.yml`, `REVIEW.md`, and `CLAUDE.md` live as you configure
+- Download `REUSE_REPORT.md` after a scan to hand teams a ranked consolidation plan
 - Download all three files with one click, ready to commit to your dbt repo
 - Built-in "How it works" guide explaining the full architecture and CI setup
 

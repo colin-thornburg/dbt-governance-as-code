@@ -1,0 +1,15 @@
+version: 2
+
+models:
+  - name: int_customers_joined
+    description: "Intermediate model that joins customers to their account tier"
+    columns:
+      - name: customer_id
+        description: "Primary key for the customer"
+        tests:
+          - unique
+          - not_null
+      - name: customer_name
+        description: "Customer display name"
+      - name: account_tier
+        description: "Customer account tier after joining account metadata"

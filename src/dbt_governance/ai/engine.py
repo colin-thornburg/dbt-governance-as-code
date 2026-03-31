@@ -100,7 +100,11 @@ class AIReviewEngine:
     def __init__(self, config: GovernanceConfig):
         self.config = config
 
-    async def review_all(self, manifest_data: ManifestData) -> tuple[list[Violation], TokenUsage]:
+    async def review_all(
+        self,
+        manifest_data: ManifestData,
+        changed_files: list[str] | None = None,
+    ) -> tuple[list[Violation], TokenUsage]:
         """Review all non-excluded models. Returns violations and aggregate token usage."""
         from dbt_governance.ai.reviewer import require_configured_api_keys, resolve_enabled_ai_models
 
@@ -119,7 +123,9 @@ class AIReviewEngine:
         models_to_review = [
             m
             for m in manifest_data.models.values()
-            if not self.config.is_path_excluded(m.file_path) and (m.raw_code or m.compiled_code)
+            if not self.config.is_path_excluded(m.file_path)
+            and (m.raw_code or m.compiled_code)
+            and (not changed_files or m.file_path in changed_files)
         ]
 
         if target.provider == AIProvider.ANTHROPIC:
@@ -215,7 +221,7 @@ class AIReviewEngine:
             try:
                 response = await client.chat.completions.create(
                     model=model_name,
-                    max_tokens=self.config.ai_review.max_tokens_per_review,
+                    max_completion_tokens=self.config.ai_review.max_tokens_per_review,
                     messages=[
                         {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user", "content": prompt},

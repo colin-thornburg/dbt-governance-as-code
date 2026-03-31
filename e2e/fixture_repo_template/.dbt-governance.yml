@@ -1,20 +1,16 @@
-# Example .dbt-governance.yml for the Jaffle Shop project
 version: 1
 
 project:
-  name: "Jaffle Shop"
-  description: "Governance rules for the Jaffle Shop demo project"
+  name: "dbt Governance E2E Fixture"
+  description: "Dedicated fixture repo for PR automation and validation"
 
 dbt_cloud:
   enabled: false
-  # account_id: 12345
-  # environment_id: 67890
-  # discovery_api_url: "https://metadata.cloud.getdbt.com/graphql"
 
 global:
   severity_default: warning
   fail_on: error
-  changed_files_only: false
+  changed_files_only: true
   exclude_paths:
     - "dbt_packages/"
     - "target/"
@@ -25,18 +21,29 @@ naming:
     staging_prefix:
       enabled: true
       severity: error
+      pattern: "stg_{source}__{entity}"
+      description: "Staging models must follow stg_<source>__<entity> naming"
     intermediate_prefix:
       enabled: true
       severity: error
+      pattern: "int_{entity}_{verb}"
+      description: "Intermediate models must follow int_<entity>_<verb> naming"
     marts_prefix:
       enabled: true
       severity: error
+      patterns:
+        facts: "fct_{entity}"
+        dimensions: "dim_{entity}"
+        other: "{entity}"
+      description: "Mart models must use fct_ or dim_ prefixes"
     source_schema_required:
       enabled: true
       severity: warning
+      description: "All sources must define an explicit schema"
     model_file_matches_name:
       enabled: true
       severity: error
+      description: "SQL filename must match the model name"
 
 structure:
   enabled: true
@@ -50,16 +57,8 @@ structure:
     no_cross_layer_skipping:
       enabled: true
       severity: warning
-    max_dag_depth:
-      enabled: true
-      severity: warning
-      max_depth: 8
-    max_fanout:
-      enabled: true
-      severity: warning
-      max_children: 10
     no_orphan_models:
-      enabled: true
+      enabled: false
       severity: info
     no_rejoin_patterns:
       enabled: true
@@ -67,6 +66,10 @@ structure:
     model_directories_match_layers:
       enabled: true
       severity: error
+      directories:
+        staging: "models/staging/"
+        intermediate: "models/intermediate/"
+        marts: "models/marts/"
 
 testing:
   enabled: true
@@ -79,10 +82,10 @@ testing:
       severity: warning
       min_tests_per_model: 2
     staging_freshness_required:
-      enabled: true
+      enabled: false
       severity: warning
     marts_have_contract:
-      enabled: true
+      enabled: false
       severity: info
     no_disabled_tests:
       enabled: true
@@ -94,14 +97,11 @@ documentation:
     model_description_required:
       enabled: true
       severity: error
-      layers:
-        - marts
-        - intermediate
+      layers: ["staging", "intermediate", "marts"]
     column_description_required:
       enabled: true
       severity: warning
-      layers:
-        - marts
+      layers: ["marts"]
     source_description_required:
       enabled: true
       severity: warning
@@ -116,10 +116,10 @@ materialization:
       enabled: true
       severity: warning
     incremental_must_have_unique_key:
-      enabled: true
+      enabled: false
       severity: error
     incremental_must_have_on_schema_change:
-      enabled: true
+      enabled: false
       severity: warning
 
 style:
@@ -141,18 +141,28 @@ style:
       enabled: true
       severity: warning
 
+migration:
+  enabled: true
+  rules:
+    no_ref_or_source:
+      enabled: true
+      severity: error
+    ddl_statements:
+      enabled: true
+      severity: error
+    hardcoded_environment_schema:
+      enabled: true
+      severity: error
+    missing_source_definition:
+      enabled: true
+      severity: error
+    no_layering:
+      enabled: true
+      severity: warning
+
 reuse:
   enabled: true
   rules:
-    model_similarity_candidates:
-      enabled: true
-      severity: info
-      min_score: 0.72
-      max_matches_per_model: 3
-    model_similarity_clusters:
-      enabled: true
-      severity: info
-      min_cluster_size: 3
     duplicate_source_staging:
       enabled: true
       severity: warning
@@ -166,20 +176,3 @@ reuse:
     identical_select_columns:
       enabled: true
       severity: info
-
-# Optional AI semantic review
-# If omitted, `dbt-governance scan --with-ai` will auto-select the first
-# available provider key from your environment (OpenAI, Anthropic, Gemini).
-# ai_review:
-#   enabled: true
-#   provider: "openai"
-#   model: "gpt-5.4"
-#   openai:
-#     enabled: true
-#     api_key_env_var: "OPENAI_API_KEY"
-#     models:
-#       - "gpt-5.4"
-#   rules:
-#     business_logic_in_staging:
-#       enabled: true
-#       severity: error

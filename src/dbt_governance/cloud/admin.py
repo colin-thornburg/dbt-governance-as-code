@@ -32,6 +32,11 @@ class AdminClient:
         data = await self.http.get(url)
         return data.get("data", [])
 
+    async def list_projects(self) -> list[dict]:
+        """List projects visible to the current account token."""
+        data = await self.http.get(self._url("projects/"))
+        return data.get("data", [])
+
     async def get_environment(self, environment_id: int) -> dict:
         """Get environment metadata."""
         url = self._url(f"environments/{environment_id}/")
@@ -52,8 +57,9 @@ class AdminClient:
     async def test_connection(self) -> bool:
         """Test connectivity to the Admin API."""
         try:
-            url = self._url("")
-            await self.http.get(url)
+            # The account root is not a reliable health endpoint. Listing projects
+            # proves the token is valid and the account is reachable.
+            await self.list_projects()
             return True
         except Exception:
             return False

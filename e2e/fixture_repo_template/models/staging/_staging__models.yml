@@ -1,0 +1,26 @@
+version: 2
+
+models:
+  - name: stg_raw__customers
+    description: "Staging model for raw customer records"
+    columns:
+      - name: customer_id
+        description: "Primary key for the customer"
+        tests:
+          - unique
+          - not_null
+      - name: customer_name
+        description: "Customer display name"
+      - name: account_id
+        description: "Foreign key to the primary customer account"
+
+  - name: stg_raw__accounts
+    description: "Staging model for raw account records"
+    columns:
+      - name: account_id
+        description: "Primary key for the account"
+        tests:
+          - unique
+          - not_null
+      - name: account_tier
+        description: "Subscription or commercial tier for the account"

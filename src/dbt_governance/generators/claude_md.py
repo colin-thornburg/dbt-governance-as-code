@@ -6,6 +6,17 @@ from pathlib import Path
 
 from dbt_governance.config import GovernanceConfig, load_config
 
+DEFAULT_NAMING_PATTERNS = {
+    "staging_prefix": "stg_{source}__{entity}",
+    "intermediate_prefix": "int_{entity}_{verb}",
+}
+
+DEFAULT_MART_PATTERNS = {
+    "facts": "fct_{entity}",
+    "dimensions": "dim_{entity}",
+    "other": "{entity}",
+}
+
 
 def _append_if_present(lines: list[str], label: str, value: str | None) -> None:
     if value:
@@ -60,18 +71,23 @@ def generate_claude_md(config: GovernanceConfig) -> str:
         _append_if_present(
             lines,
             "Staging",
-            (staging.model_extra or {}).get("pattern") if staging else None,
+            (staging.model_extra or {}).get("pattern") if staging else DEFAULT_NAMING_PATTERNS["staging_prefix"],
         )
         _append_if_present(
             lines,
             "Intermediate",
-            (intermediate.model_extra or {}).get("pattern") if intermediate else None,
+            (intermediate.model_extra or {}).get("pattern")
+            if intermediate
+            else DEFAULT_NAMING_PATTERNS["intermediate_prefix"],
         )
         if marts:
             patterns = (marts.model_extra or {}).get("patterns")
             if isinstance(patterns, dict):
                 pattern_text = ", ".join(f"{name}={pattern}" for name, pattern in patterns.items())
                 _append_if_present(lines, "Marts", pattern_text)
+        else:
+            pattern_text = ", ".join(f"{name}={pattern}" for name, pattern in DEFAULT_MART_PATTERNS.items())
+            _append_if_present(lines, "Marts", pattern_text)
     else:
         lines.append("- No naming rules are currently enabled.")
 

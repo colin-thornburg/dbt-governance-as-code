@@ -20,6 +20,7 @@ class Violation(BaseModel):
     message: str
     suggestion: str | None = None
     ai_generated: bool = False
+    details: dict[str, Any] = Field(default_factory=dict)
 
 
 class RuleContext(BaseModel):

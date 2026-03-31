@@ -330,6 +330,21 @@ export const categoryDefinitions: CategoryDefinition[] = [
     accent: "var(--accent-teal)",
     rules: [
       {
+        key: "model_similarity_candidates",
+        label: "Similarity scoring finds near-duplicate models automatically",
+        helper: "Scores pairs of models by shared inputs, selected columns, joins, filters, grouping, and aggregates. Best for migration cleanup where the same logic was rebuilt with different CTE names.",
+        fields: [
+          { key: "min_score", label: "Min similarity score", type: "number" },
+          { key: "max_matches_per_model", label: "Max matches per model", type: "number" }
+        ]
+      },
+      {
+        key: "model_similarity_clusters",
+        label: "Cluster similar models into one shared intermediate recommendation",
+        helper: "Turns strong pairwise matches into group-level recommendations so governance teams can say 'these 4 models should become one shared intermediate'. Uses the pairwise similarity threshold and lets you set the minimum cluster size.",
+        fields: [{ key: "min_cluster_size", label: "Min cluster size", type: "number" }]
+      },
+      {
         key: "duplicate_source_staging",
         label: "Each source table should have exactly one staging model",
         helper: "Multiple staging models on the same source creates divergent logic. One staging model, many consumers via ref()."
@@ -608,6 +623,19 @@ export const defaultGovernanceConfig: GovernanceConfig = {
   reuse: {
     enabled: true,
     rules: {
+      model_similarity_candidates: {
+        enabled: true,
+        severity: "info",
+        min_score: 0.72,
+        max_matches_per_model: 3,
+        description: "Models with highly similar SQL structure are candidates for consolidation"
+      },
+      model_similarity_clusters: {
+        enabled: true,
+        severity: "info",
+        min_cluster_size: 3,
+        description: "Groups of highly similar models should converge on one shared intermediate"
+      },
       duplicate_source_staging: {
         enabled: true,
         severity: "warning",
@@ -675,7 +703,31 @@ function serializeYamlValue(value: unknown, indent = 0): string[] {
 }
 
 export function generateYaml(config: GovernanceConfig): string {
-  return serializeYamlValue(config).join("\n") + "\n";
+  const providerToScanner: Record<string, string> = {
+    claude: "anthropic",
+    openai: "openai",
+    gemini: "gemini",
+  };
+
+  const scannerConfig: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(config)) {
+    if (key === "ai_provider") continue;
+    scannerConfig[key] = value;
+  }
+
+  const aiProvider = config.ai_provider;
+  if (aiProvider.provider !== "none") {
+    scannerConfig["ai_review"] = {
+      enabled: true,
+      provider: providerToScanner[aiProvider.provider] ?? aiProvider.provider,
+      model: aiProvider.model,
+      max_tokens_per_review: aiProvider.max_tokens_per_review,
+    };
+  } else {
+    scannerConfig["ai_review"] = { enabled: false };
+  }
+
+  return serializeYamlValue(scannerConfig).join("\n") + "\n";
 }
 
 export function generateReviewMd(config: GovernanceConfig): string {

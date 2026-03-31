@@ -1,0 +1,15 @@
+version: 2
+
+models:
+  - name: dim_customers
+    description: "Customer dimension for analytics and PR automation validation"
+    columns:
+      - name: customer_id
+        description: "Primary key for the customer dimension"
+        tests:
+          - unique
+          - not_null
+      - name: customer_name
+        description: "Customer display name exposed to downstream marts"
+      - name: account_tier
+        description: "Current customer account tier"

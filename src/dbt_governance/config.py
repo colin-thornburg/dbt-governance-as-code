@@ -442,6 +442,17 @@ reuse:
       enabled: true
       severity: warning
       description: "Multiple staging models reference the same source table"
+    model_similarity_candidates:
+      enabled: true
+      severity: info
+      min_score: 0.72
+      max_matches_per_model: 3
+      description: "Models with highly similar SQL structure are candidates for consolidation"
+    model_similarity_clusters:
+      enabled: true
+      severity: info
+      min_cluster_size: 3
+      description: "Groups of highly similar models should converge on one shared intermediate"
     shared_cte_candidates:
       enabled: true
       severity: info

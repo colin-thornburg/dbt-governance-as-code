@@ -78,6 +78,20 @@ def print_results(result: ScanResult) -> None:
             icon = SEVERITY_ICONS.get(v.severity, str(v.severity))
             console.print(f"  {icon} [dim]\\[{v.rule_id}][/dim] {v.file_path or v.model_name}")
             console.print(f"    {v.message}")
+            if v.details.get("cluster_size") is not None:
+                avg_score = v.details.get("cluster_average_score", 0.0)
+                confidence = v.details.get("confidence_band", "unknown")
+                cluster_size = v.details.get("cluster_size", 0)
+                console.print(
+                    f"    [dim]cluster size: {cluster_size} | confidence: {confidence} | average similarity: {avg_score:.2f}[/dim]"
+                )
+            elif v.details.get("similarity_score") is not None:
+                score = v.details.get("similarity_score")
+                confidence = v.details.get("confidence_band", "unknown")
+                paired = v.details.get("paired_model_name", "unknown")
+                console.print(
+                    f"    [dim]confidence: {confidence} | similarity: {score:.2f} | paired model: {paired}[/dim]"
+                )
             if v.suggestion:
                 console.print(f"    [dim]\u2192 {v.suggestion}[/dim]")
             console.print()
@@ -89,7 +103,16 @@ def print_results(result: ScanResult) -> None:
     score_table.add_column("", justify="left", width=14)
     score_table.add_column("Violations", justify="right")
 
-    for cat in ["naming", "structure", "testing", "documentation", "materialization", "style"]:
+    for cat in [
+        "naming",
+        "structure",
+        "testing",
+        "documentation",
+        "materialization",
+        "style",
+        "migration",
+        "reuse",
+    ]:
         cs = summary.category_scores.get(cat)
         if cs:
             score_table.add_row(

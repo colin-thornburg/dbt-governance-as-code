@@ -129,6 +129,43 @@ The same standards drive both the deterministic scan and the AI-powered review.
 
 ---
 
+## Real Operator Experience
+
+Live testing changed one important design assumption: **the best PR experience comes from local parse mode, not cloud mode**.
+
+### When to use Cloud mode
+
+Use `dbt-governance scan --cloud` when the goal is to validate a real dbt Cloud account and environment:
+
+- Confirm the service token works
+- Confirm Discovery/Admin API access works
+- Confirm a real sandbox or production environment can be scanned
+- Confirm an AI provider can run against real metadata
+
+This is the best path for sandbox validation, account onboarding, and on-demand audits.
+
+### When to use Local parse mode
+
+Use local mode in CI for pull requests:
+
+1. CI checks out the PR branch
+2. CI runs `dbt parse`
+3. CI runs `dbt-governance scan --local --manifest target/manifest.json --project-dir . --changed-only --github-annotate` with `GITHUB_SHA` overridden to the PR head SHA
+
+Why this is the best PR experience:
+
+- New models added in the branch appear in the fresh manifest
+- Changed SQL/YAML in the checked-out repo is read directly from disk
+- GitHub Check annotations are attached to the current commit SHA
+- CI does not depend on deployed dbt Cloud environment state lagging behind the branch
+
+### Recommended operating split
+
+- **Cloud mode**: live environment validation, sandbox scanning, production audits
+- **Local mode**: PR validation, changed-files-only scans, fixture-repo automation
+
+---
+
 ## Frontend Architecture: Central Governance UI
 
 ### Purpose
@@ -158,21 +195,32 @@ Static Next.js app (`hub/`). No backend required — all config generation happe
 1. Add .dbt-governance.yml to the project (downloaded from Central Governance UI)
 2. In project's CI:
    - pip install dbt-governance
-   - dbt-governance scan --output sarif --output-file results.sarif
-3. Upload SARIF for inline PR annotations
+   - dbt parse
+   - dbt-governance scan --local --manifest target/manifest.json --project-dir . --changed-only --github-annotate --output sarif --output-file results.sarif
+3. GitHub Check annotations appear on the PR commit
+4. Upload SARIF for code scanning visibility
 4. Commit REVIEW.md and CLAUDE.md — Claude Code Review discovers them automatically
 5. Every PR now gets:
    - Deterministic scan (naming, structure, tests, docs, migration, re-use)
    - AI semantic review (business logic, descriptions, incremental patterns)
 ```
 
-### Flow 3: Point at a Different Project
+### Flow 3: Validate a Live Sandbox
 
 ```bash
-# Same config, different environment — pass via env vars or CLI flags
-dbt-governance scan \
-  --account-id 257364 \
-  --environment-id 432623
+# Best for validating real dbt Cloud connectivity and environment scanning
+dbt-governance cloud test-connection
+dbt-governance scan --cloud
+dbt-governance scan --cloud --with-ai
+```
+
+### Flow 4: Point at a Different Project
+
+```bash
+# Same config pattern, different environment — change the config or env vars
+DBT_CLOUD_ACCOUNT_ID=257364 \
+DBT_CLOUD_ENVIRONMENT_ID=432623 \
+dbt-governance scan --cloud
 ```
 
 ---
@@ -221,6 +269,8 @@ Re-use detection is not about code style. It is about identifying structural dup
 
 | Pattern | Description | Candidate Fix |
 |---|---|---|
+| **Model-level similarity scoring** | Two models have highly similar inputs, selected columns, joins, filters, and aggregation shape even if their CTE names differ | Extract the shared logic into a reusable intermediate and keep only the genuinely divergent downstream logic in each model |
+| **Similarity clusters** | Three or more models form a connected similarity group, indicating one shared intermediate should replace several parallel branches | Build a single shared intermediate for the common logic, then reduce each cluster member to only its unique downstream logic |
 | **Duplicate source staging** | Two or more staging models both reference the same source table as their primary input | Delete the duplicates; all downstream models should `ref()` the canonical staging model |
 | **Duplicate CTE names across models** | The same CTE name (e.g., `customers`, `paid_orders`, `active_subscriptions`) appears in 3+ separate models with similar structure | Extract the CTE into a shared intermediate model; downstream models `ref()` it |
 | **Multiple non-staging models reading the same source** | Mart or intermediate models bypass the staging layer and read directly from the same raw source table | Enforce a single staging model as the entry point; marts should `ref()` staging, not `source()` directly |
@@ -228,7 +278,13 @@ Re-use detection is not about code style. It is about identifying structural dup
 
 ### How the Rules Work
 
-The four re-use rules operate on the `ManifestData` graph produced by the scanner:
+The re-use rules operate on the `ManifestData` graph produced by the scanner:
+
+**`reuse.model_similarity_candidates`**
+Builds a structural profile for each model using normalized SQL parsing: inputs, selected columns, joins, filters, grouping, aggregates, and CTE names. It then computes a weighted similarity score between same-layer models. Pairs above a configurable threshold are surfaced as consolidation candidates even when they do not use the same CTE names or formatting. Each finding now carries structured pairwise details: the similarity score, a confidence band (`high`, `medium`, `low`), the paired model, the shared inputs/columns/aggregates/filters, and a suggested shared intermediate name.
+
+**`reuse.model_similarity_clusters`**
+Builds a similarity graph from the pairwise model matches, then finds connected groups of models that all overlap strongly enough to be treated as one consolidation opportunity. Instead of asking a governance team to look at six separate pairwise findings, it can now say "these 4 models form one reuse cluster." Each finding includes the cluster members, average and peak similarity, the strongest example links, common inputs/columns/filters, and a suggested shared intermediate model name.
 
 **`reuse.duplicate_source_staging`**
 Iterates all staging models and builds a map of `source_table → [staging_models]`. Any source table that maps to more than one staging model is flagged. Each duplicate staging model gets a violation with a suggestion identifying the canonical model and the models that should be removed.
@@ -248,9 +304,13 @@ In terminal output, re-use violations appear in their own section alongside the 
 
 - The rule that triggered and the models involved
 - A description of the specific duplication pattern
+- For similarity matches, the confidence band and the paired model
+- For similarity clusters, the full model group, average similarity, and suggested shared intermediate
 - A concrete suggestion: which model to keep, which to remove, or what the shared intermediate should be named and what it should contain
 
-In JSON and SARIF output, re-use violations carry `category: "reuse"` for easy filtering. Governance score contribution is weighted at 8% — lower than structural rules, because re-use issues are an improvement opportunity rather than a correctness defect, but enough to move the score meaningfully when a project has significant pipeline redundancy.
+In JSON output, both pairwise and cluster similarity findings now include a structured `details` object so downstream tooling can rank or visualize the strongest consolidation opportunities without parsing freeform text. The scan result also includes a dedicated `reuse_report` section that orders cluster recommendations first and strongest remaining pairs second, producing an explicit remediation queue instead of a flat list of findings. The Hub UI uses these details to render confidence pills, paired-model context, cluster membership, strongest example links, and one-click tuning presets for conservative, balanced, or broad discovery scans. Governance score contribution is weighted at 8% — lower than structural rules, because re-use issues are an improvement opportunity rather than a correctness defect, but enough to move the score meaningfully when a project has significant pipeline redundancy.
+
+When teams need a handoff artifact rather than JSON, the scanner can also generate `REUSE_REPORT.md` from a live scan. This markdown report mirrors the ranked `reuse_report` structure: clusters first, strongest remaining pairs second, with suggested shared intermediates and supporting overlap signals. It now begins with an executive summary oriented at governance leads: overall remediation risk, number of high-priority actions, and the top consolidation moves to staff first. It is designed to be handed directly to a domain team as a remediation worklist after leadership triage.
 
 ### Relationship to the Legacy Migration Report
 
@@ -267,6 +327,17 @@ A project migrated from Talend will typically have both problems: migration defe
 reuse:
   enabled: true
   rules:
+    model_similarity_candidates:
+      enabled: true
+      severity: info
+      min_score: 0.72        # Weighted structural similarity threshold
+      max_matches_per_model: 3
+
+    model_similarity_clusters:
+      enabled: true
+      severity: info
+      min_cluster_size: 3   # Minimum group size before emitting a cluster recommendation
+
     duplicate_source_staging:
       enabled: true
       severity: warning
@@ -286,6 +357,13 @@ reuse:
 ```
 
 Set `min_occurrences` higher (e.g., 5) to reduce noise in large projects where common CTE names like `final` or `base` are used by convention. Set it lower (e.g., 2) when enforcing strict re-use discipline.
+Set `min_score` higher (e.g., `0.85`) when you only want near-duplicates, and lower (e.g., `0.65`) when you want broader consolidation suggestions during large legacy migrations. The Hub exposes this as three presets:
+
+- **Conservative** — `min_score: 0.85`, `max_matches_per_model: 2`
+- **Balanced** — `min_score: 0.72`, `max_matches_per_model: 3`
+- **Discovery** — `min_score: 0.65`, `max_matches_per_model: 5`
+
+Cluster recommendations use the same pairwise `min_score` threshold by default, so users only have to reason about one similarity threshold. The separate cluster knob is `min_cluster_size`, which defaults to `3`.
 
 ---
 
@@ -304,9 +382,12 @@ Set `min_occurrences` higher (e.g., 5) to reduce noise in large projects where c
 | **AI semantic reviewer — Anthropic** | Claude API integration for per-model semantic review | ✅ Built |
 | **AI semantic reviewer — Google Gemini** | Gemini API integration (`gemini-2.5-pro`, `gemini-2.5-flash`) | ✅ Built |
 | **AI semantic reviewer — OpenAI** | OpenAI API integration (`gpt-5.4`, `gpt-5-mini`) | ✅ Built |
-| **GitHub PR annotations** | Post inline violations as GitHub Check run annotations on PR diffs | 🔲 Outstanding |
+| **GitHub PR annotations** | Post inline violations as GitHub Check run annotations on PR diffs | ✅ Built |
 | **GitLab MR notes** | Post violations as GitLab discussion notes on MR diff lines | 🔲 Outstanding |
-| **Changed-files mode** | `--changed-only`: git diff integration to scan only PR-modified files | 🔲 Outstanding |
+| **Changed-files mode** | `--changed-only`: git diff integration to scan only PR-modified files | ✅ Built |
+| **Project file overlay** | Use checked-out SQL/YAML for PR-aware scans instead of only environment SQL | ✅ Built |
+| **Fixture repo template** | Minimal dbt project + GitHub Actions workflow for end-to-end PR validation | ✅ Built |
+| **Fixture PR validation harness** | Opens disposable good/bad PRs and writes markdown/json validation reports | ✅ Built |
 | **Custom rule plugins** | Regex and yaml_key_exists custom rules from config | 🔲 Outstanding |
 | **Pre-commit hook** | Fast rule subset runnable as a pre-commit hook | 🔲 Phase 4 |
 | **Account-wide scanning** | Scan all projects in a dbt Cloud account in one run | 🔲 Phase 4 |
@@ -317,16 +398,13 @@ Set `min_occurrences` higher (e.g., 5) to reduce noise in large projects where c
 
 ### GitHub PR Annotations (`--github-annotate`)
 
-Posts governance violations as inline annotations on the PR diff using the GitHub Checks API. Violations appear directly on the changed file lines in the GitHub PR review interface.
+This is now built. Violations are published as a GitHub Check run against the PR head SHA, and inline annotations appear on the changed files in the GitHub PR experience.
 
-**What needs to be built:**
-- [ ] `src/dbt_governance/output/github.py` — GitHub Checks API client using `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, `GITHUB_SHA` env vars
-- [ ] Map violations to GitHub annotation format (`path`, `start_line`, `annotation_level`, `message`, `title`)
-- [ ] `--github-annotate` flag wired into `cli.py` scan command
-- [ ] Handle the 50-annotation-per-request limit (batch if violations > 50)
-- [ ] Test against a real PR in a fixture GitHub repo to verify inline placement
-- [ ] Document required GitHub token scopes (`checks:write`) in README and `.env.example`
-- [ ] End-to-end test: run `dbt-governance scan --github-annotate` in CI, verify annotations appear on the PR diff
+Built components:
+- [x] `src/dbt_governance/output/github.py`
+- [x] `--github-annotate` flag in `cli.py`
+- [x] 50-annotation batching for large scans
+- [x] README documentation for required workflow permissions and env vars
 
 ### GitLab MR Notes (`--gitlab-annotate`)
 
@@ -343,30 +421,47 @@ Posts violations as GitLab discussion threads pinned to specific diff lines in a
 
 ### PR Annotation Testing Plan
 
-Both annotation integrations need an end-to-end test workflow that can be triggered manually or via CI:
+The GitHub path now has a concrete end-to-end workflow. The expected experience is:
 
-1. Create a fixture dbt project repo on GitHub (and GitLab) with intentional violations — wrong naming, missing tests, hardcoded schemas.
-2. Open a PR/MR that introduces or modifies those files.
-3. Run `dbt-governance scan --github-annotate` (or `--gitlab-annotate`) inside the CI job for that PR.
+1. CI checks out the PR branch
+2. CI runs `dbt parse`
+3. CI runs `dbt-governance scan --local --manifest target/manifest.json --project-dir . --changed-only --github-annotate`
 4. Verify:
    - Annotations appear inline on the correct file and line in the PR diff.
    - The Check run status reflects the scan outcome (pass/fail).
-   - Violations on files not in the diff do not cause API errors.
    - The job exits with code 1 when `fail_on: error` and errors exist.
-5. Test edge cases: zero violations (no annotations posted), >50 violations (batching), binary/generated files skipped.
+   - SARIF uploads separately for code scanning visibility, ideally as a non-blocking step when GitHub code scanning permissions are not guaranteed.
+5. Test edge cases: zero violations, >50 violations (batching), binary/generated files skipped.
 
 ### Changed-Files Mode (`--changed-only`)
 
-Scans only the files modified in the current PR/MR rather than the full project.
+This is now built. The scanner computes changed files from git diff, still evaluates the full graph/context, and only reports findings for changed files or changed directories when the violation is directory-scoped.
 
-**What needs to be built:**
-- [ ] `src/dbt_governance/utils/diff.py` — parse `git diff --name-only origin/main...HEAD` output into a list of changed SQL/YAML file paths
-- [ ] Pass `changed_files` list into `RuleContext` (field already defined on the model)
-- [ ] All rule `evaluate()` methods need to skip models whose `file_path` is not in `changed_files` when the list is non-empty
-- [ ] `--changed-only` flag in `cli.py` scan command that populates `changed_files`
-- [ ] Handle the case where `git` is not available (warn and fall back to full scan)
-- [ ] Test: verify that a violation in an unchanged file is suppressed when `--changed-only` is active
-- [ ] Test: verify that changed-only mode still evaluates DAG rules that depend on unchanged upstream models (those models should still be loaded into context even if not scanned for violations)
+Remaining work:
+- [ ] Better base-branch detection across more CI providers
+- [ ] Warning/telemetry when git diff fallback modes are used
+- [ ] Additional tests for directory-level findings and non-standard repo layouts
+
+### Fixture Repo Automation Harness
+
+The fixture automation path is now built:
+
+- `e2e/fixture_repo_template/`
+- `scripts/e2e/bootstrap_fixture_repo.py`
+- `scripts/e2e/run_fixture_pr_validation.py`
+
+Expected experience:
+
+1. Bootstrap a dedicated fixture repo from the template
+2. Push it to GitHub and enable Actions
+3. Run the validator to open a disposable good PR and bad PR
+4. Review `artifacts/e2e/fixture-pr-validation.md` and `.json`
+
+Remaining work:
+- [ ] Add optional cleanup mode that closes generated PRs automatically
+- [ ] Validate SARIF/code scanning alerts directly in the report, not only Check runs
+- [ ] Add stronger assertion logic for Claude Code Review comments when that integration is installed
+- [ ] Add support for provisioning a brand-new GitHub repo automatically instead of assuming an existing repo
 
 ### Custom Rule Plugins
 
@@ -386,7 +481,6 @@ The Anthropic, Gemini, and OpenAI review engines are implemented. Remaining work
 
 - [ ] `max_models_per_scan` enforcement — currently reviews all non-excluded models; need to add a cap and log a warning when truncated
 - [ ] `cost_budget_per_scan_usd` enforcement — stop sending API requests when estimated cost exceeds the configured budget
-- [ ] `skip_unchanged_models` in `--changed-only` mode — AI review should only review models whose SQL files changed in the PR
 - [ ] `confidence_threshold` filtering — Gemini and OpenAI responses do not yet include confidence; define a convention or strip low-confidence findings
 - [ ] Tests for Gemini and OpenAI review paths (mock API responses)
 - [ ] Terminal output: show token usage and estimated cost summary at the end of `--with-ai` scans

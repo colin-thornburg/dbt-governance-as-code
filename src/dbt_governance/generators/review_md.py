@@ -22,6 +22,43 @@ SEVERITY_HEADINGS = (
     (Severity.INFO, "Optional Improvements"),
 )
 
+DEFAULT_RULES_BY_CATEGORY = {
+    "naming": [
+        (Severity.ERROR, "Staging models must follow stg_<source>__<entity> naming"),
+        (Severity.ERROR, "Intermediate models must follow int_<entity>_<verb> naming"),
+        (Severity.ERROR, "Mart models must use fct_ or dim_ prefixes"),
+    ],
+    "structure": [
+        (Severity.ERROR, "Staging models may only reference sources via source(), never ref()"),
+        (Severity.ERROR, "Mart models must not directly reference sources"),
+        (Severity.WARNING, "Models should not skip layers between staging, intermediate, and marts"),
+    ],
+    "testing": [
+        (Severity.ERROR, "Every model must have a unique + not_null test on its primary key"),
+        (Severity.WARNING, "Every model should meet the configured minimum test coverage"),
+    ],
+    "documentation": [
+        (Severity.ERROR, "Every model directory should contain a schema YAML file"),
+        (Severity.WARNING, "Required models and sources should have descriptions"),
+    ],
+    "materialization": [
+        (Severity.ERROR, "Incremental models must define a unique_key"),
+        (Severity.WARNING, "Staging models should be materialized as views"),
+    ],
+    "style": [
+        (Severity.ERROR, "SQL must not contain hardcoded schema or database references"),
+        (Severity.WARNING, "ref() calls should live in import CTEs, not inline joins"),
+    ],
+    "migration": [
+        (Severity.ERROR, "Legacy-migrated SQL should use ref() / source() instead of direct table references"),
+        (Severity.ERROR, "Legacy ETL DDL/DML statements should be removed from dbt models"),
+    ],
+    "reuse": [
+        (Severity.WARNING, "Duplicate source staging models should be consolidated"),
+        (Severity.INFO, "Repeated CTE logic should be extracted into shared intermediate models"),
+    ],
+}
+
 
 def _fallback_description(rule_name: str) -> str:
     return rule_name.replace("_", " ").strip().capitalize()
@@ -37,6 +74,11 @@ def _collect_rules_by_severity(config: GovernanceConfig) -> dict[Severity, list[
     for category_name in RULE_CATEGORIES:
         category = getattr(config, category_name, None)
         if category is None or not getattr(category, "enabled", False):
+            continue
+
+        if not category.rules and category_name in DEFAULT_RULES_BY_CATEGORY:
+            for severity, description in DEFAULT_RULES_BY_CATEGORY[category_name]:
+                grouped[severity].append(description)
             continue
 
         for rule_name, rule in category.rules.items():
