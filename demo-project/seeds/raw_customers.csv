@@ -1,0 +1,9 @@
+customer_id,name,email,plan,country,created_at
+1,Alice Johnson,alice@example.com,pro,US,2024-01-15
+2,Bob Smith,bob@example.com,free,US,2024-01-20
+3,Carol White,carol@example.com,enterprise,UK,2024-02-01
+4,David Lee,david@example.com,pro,CA,2024-02-10
+5,Eva Martinez,eva@example.com,free,ES,2024-02-15
+6,Frank Brown,frank@example.com,enterprise,US,2024-03-01
+7,Grace Kim,grace@example.com,pro,KR,2024-03-05
+8,Henry Chen,henry@example.com,free,CN,2024-03-10

@@ -34,6 +34,7 @@ export type GovernanceConfig = {
     provider: AiProvider;
     model: string;
     max_tokens_per_review: number;
+    additional_instructions: string;
   };
   global: {
     severity_default: Severity;
@@ -47,7 +48,6 @@ export type GovernanceConfig = {
   documentation: RuleCategory;
   materialization: RuleCategory;
   style: RuleCategory;
-  migration: RuleCategory;
   reuse: RuleCategory;
 };
 
@@ -72,7 +72,6 @@ export type CategoryDefinition = {
     | "documentation"
     | "materialization"
     | "style"
-    | "migration"
     | "reuse"
   >;
   title: string;
@@ -116,6 +115,11 @@ export const categoryDefinitions: CategoryDefinition[] = [
         key: "model_file_matches_name",
         label: "SQL filenames match model names",
         helper: "Keep file paths and schema metadata aligned."
+      },
+      {
+        key: "no_layering",
+        label: "Every model must belong to a recognizable layer",
+        helper: "Models with no stg_/int_/fct_/dim_ prefix and no layer directory were likely migrated as monolithic ETL jobs."
       }
     ]
   },
@@ -166,6 +170,11 @@ export const categoryDefinitions: CategoryDefinition[] = [
         key: "model_directories_match_layers",
         label: "Model directories match layers",
         helper: "Keep source control layout aligned with semantic layers."
+      },
+      {
+        key: "no_ref_or_source",
+        label: "Models must use ref() or source() — no direct table references",
+        helper: "A model with no ref()/source() calls is invisible to dbt lineage and breaks the DAG entirely."
       }
     ]
   },
@@ -230,6 +239,11 @@ export const categoryDefinitions: CategoryDefinition[] = [
         key: "schema_yml_exists",
         label: "Schema YAML exists per model directory",
         helper: "Eliminate undocumented pockets of the repo."
+      },
+      {
+        key: "missing_source_definition",
+        label: "source() calls must have a corresponding sources.yml entry",
+        helper: "Orphaned source() calls mean lineage is incomplete and freshness checks will never run."
       }
     ]
   },
@@ -287,39 +301,11 @@ export const categoryDefinitions: CategoryDefinition[] = [
         key: "refs_in_ctes_not_inline",
         label: "Place ref() calls in import CTEs, not inline joins",
         helper: "Improve readability and diffability."
-      }
-    ]
-  },
-  {
-    key: "migration",
-    title: "Migration Rules",
-    description: "Surface anti-patterns carried in from Talend, Informatica, SSIS, and other legacy ETL tools.",
-    accent: "var(--accent-brick)",
-    rules: [
-      {
-        key: "no_ref_or_source",
-        label: "Models must use ref() or source() — not direct table references",
-        helper: "A model with no ref()/source() calls breaks dbt lineage entirely. Classic Talend/Informatica migration symptom."
       },
       {
         key: "ddl_statements",
         label: "No DDL or DML statements (CREATE TABLE, INSERT INTO, MERGE, TRUNCATE)",
-        helper: "dbt manages DDL via materializations. These statements indicate a procedural ETL job was pasted directly."
-      },
-      {
-        key: "hardcoded_environment_schema",
-        label: "No hardcoded environment schema names (prod., dev., staging., edw.)",
-        helper: "Hardcoded schemas break when the same model runs in dev or CI. Use source() and ref() instead."
-      },
-      {
-        key: "missing_source_definition",
-        label: "source() calls must have a corresponding sources.yml entry",
-        helper: "Orphaned source() calls mean lineage is incomplete and freshness checks will never run."
-      },
-      {
-        key: "no_layering",
-        label: "Every model must belong to a recognizable dbt layer",
-        helper: "Models without stg_/int_/fct_/dim_ prefixes or a layer directory were likely migrated as monolithic ETL jobs."
+        helper: "dbt manages DDL via materializations. These statements indicate a procedural ETL job was pasted directly into a model file."
       }
     ]
   },
@@ -388,7 +374,8 @@ export const defaultGovernanceConfig: GovernanceConfig = {
   ai_provider: {
     provider: "claude",
     model: "claude-sonnet-4-6",
-    max_tokens_per_review: 4096
+    max_tokens_per_review: 4096,
+    additional_instructions: ""
   },
   global: {
     severity_default: "warning",
@@ -426,6 +413,11 @@ export const defaultGovernanceConfig: GovernanceConfig = {
         enabled: true,
         severity: "error",
         description: "SQL filename must match the model name defined in schema YAML"
+      },
+      no_layering: {
+        enabled: true,
+        severity: "warning",
+        description: "Model has no dbt layer structure — no stg_/int_/fct_/dim_ prefix and no layer directory"
       }
     }
   },
@@ -478,6 +470,11 @@ export const defaultGovernanceConfig: GovernanceConfig = {
           marts: "models/marts/"
         },
         description: "Models must live in the directory matching their layer"
+      },
+      no_ref_or_source: {
+        enabled: true,
+        severity: "error",
+        description: "Model has no ref()/source() calls — likely a raw ETL SQL migration"
       }
     }
   },
@@ -536,6 +533,11 @@ export const defaultGovernanceConfig: GovernanceConfig = {
         enabled: true,
         severity: "error",
         description: "Every model directory must contain a corresponding schema YAML file"
+      },
+      missing_source_definition: {
+        enabled: true,
+        severity: "error",
+        description: "source() is called but the source is not defined in any sources.yml"
       }
     }
   },
@@ -587,36 +589,11 @@ export const defaultGovernanceConfig: GovernanceConfig = {
         enabled: true,
         severity: "warning",
         description: "ref() calls should be in import CTEs, not inline in joins"
-      }
-    }
-  },
-  migration: {
-    enabled: true,
-    rules: {
-      no_ref_or_source: {
-        enabled: true,
-        severity: "error",
-        description: "Model has no ref()/source() calls — likely a raw ETL SQL migration"
       },
       ddl_statements: {
         enabled: true,
         severity: "error",
         description: "Model contains DDL/DML statements (CREATE TABLE, INSERT INTO, TRUNCATE, MERGE)"
-      },
-      hardcoded_environment_schema: {
-        enabled: true,
-        severity: "error",
-        description: "SQL references hardcoded environment schema names (prod., dev., staging., edw., etc.)"
-      },
-      missing_source_definition: {
-        enabled: true,
-        severity: "error",
-        description: "source() is called but the source is not defined in any sources.yml"
-      },
-      no_layering: {
-        enabled: true,
-        severity: "warning",
-        description: "Model has no dbt layer structure — no stg_/int_/fct_/dim_ prefix and no layer directory"
       }
     }
   },
@@ -717,12 +694,16 @@ export function generateYaml(config: GovernanceConfig): string {
 
   const aiProvider = config.ai_provider;
   if (aiProvider.provider !== "none") {
-    scannerConfig["ai_review"] = {
+    const aiReview: Record<string, unknown> = {
       enabled: true,
       provider: providerToScanner[aiProvider.provider] ?? aiProvider.provider,
       model: aiProvider.model,
       max_tokens_per_review: aiProvider.max_tokens_per_review,
     };
+    if (aiProvider.additional_instructions.trim()) {
+      aiReview["additional_instructions"] = aiProvider.additional_instructions;
+    }
+    scannerConfig["ai_review"] = aiReview;
   } else {
     scannerConfig["ai_review"] = { enabled: false };
   }
@@ -779,8 +760,6 @@ export function generateClaudeMd(config: GovernanceConfig): string {
   const layerDirectories = config.structure.rules.model_directories_match_layers
     .directories as Record<string, string>;
 
-  const migrationEnabled = config.migration.enabled &&
-    Object.values(config.migration.rules).some((r) => r.enabled);
   const reuseEnabled = config.reuse.enabled &&
     Object.values(config.reuse.rules).some((r) => r.enabled);
 
@@ -796,16 +775,6 @@ export function generateClaudeMd(config: GovernanceConfig): string {
     config.dbt_cloud.enabled
       ? `- Primary metadata source: dbt Cloud environment \`${config.dbt_cloud.environment_id}\` using \`${config.dbt_cloud.state_type}\` state.`
       : "- Primary metadata source: local manifest fallback mode.",
-    ...(migrationEnabled
-      ? [
-          "",
-          "## Legacy Migration Checks",
-          "- Flag any model with no ref() or source() calls — this breaks dbt lineage.",
-          "- Flag CREATE TABLE, INSERT INTO, TRUNCATE, or MERGE statements — use materializations instead.",
-          "- Flag hardcoded schema/database references (prod., dev., staging., edw.) — use source() or ref().",
-          "- Flag models without stg_/int_/fct_/dim_ naming or layer directory — they were likely migrated as monolithic ETL jobs."
-        ]
-      : []),
     ...(reuseEnabled
       ? [
           "",
@@ -834,6 +803,62 @@ export function generateClaudeMd(config: GovernanceConfig): string {
   ].join("\n");
 }
 
+export function generateGeminiMd(config: GovernanceConfig): string {
+  // Google's Gemini CLI reads GEMINI.md the same way Claude Code reads CLAUDE.md.
+  // The content mirrors generateClaudeMd — same governance instructions, different AI host.
+  const naming = config.naming.rules;
+  const martsPatterns = naming.marts_prefix.patterns as Record<string, string>;
+  const layerDirectories = config.structure.rules.model_directories_match_layers
+    .directories as Record<string, string>;
+
+  const reuseEnabled = config.reuse.enabled &&
+    Object.values(config.reuse.rules).some((r) => r.enabled);
+
+  return [
+    `# dbt Project: ${config.project.name}`,
+    "",
+    "<!-- Auto-generated by Central Governance — loaded by Gemini CLI -->",
+    "",
+    config.project.description,
+    "",
+    "## Review Context",
+    "- This repository uses dbt governance as code. Apply these standards when reviewing SQL, YAML, and model structure changes.",
+    config.dbt_cloud.enabled
+      ? `- Primary metadata source: dbt Cloud environment \`${config.dbt_cloud.environment_id}\` using \`${config.dbt_cloud.state_type}\` state.`
+      : "- Primary metadata source: local manifest fallback mode.",
+    ...(reuseEnabled
+      ? [
+          "",
+          "## Re-use Checks",
+          "- Flag when two or more models appear to be staging the same source table independently.",
+          "- Flag identical or near-identical CTE blocks across models — suggest extracting to a shared intermediate.",
+          "- Note any obvious consolidation opportunities when reviewing multiple related models in the same PR."
+        ]
+      : []),
+    "",
+    "## Architecture Expectations",
+    "- Preferred layer progression: staging → intermediate → marts.",
+    ...Object.entries(layerDirectories).map(([layer, path]) => `- ${capitalize(layer)} models belong under \`${path}\`.`),
+    "",
+    "## Naming Conventions",
+    `- Staging: ${String(naming.staging_prefix.pattern)}`,
+    `- Intermediate: ${String(naming.intermediate_prefix.pattern)}`,
+    `- Marts: ${Object.entries(martsPatterns)
+      .map(([name, pattern]) => `${name}=${pattern}`)
+      .join(", ")}`,
+    "",
+    "## Enforcement Notes",
+    `- CI fails on \`${config.global.fail_on}\` severity or higher.`,
+    `- Ignore these paths during review unless explicitly requested: ${config.global.exclude_paths.join(", ")}`,
+    "- Preserve model tests, descriptions, and incremental safety guards when editing governed models."
+  ].join("\n");
+}
+
+/** Returns the correct AI context filename for the selected provider. */
+export function aiMdFilename(provider: AiProvider): string {
+  return provider === "gemini" ? "GEMINI.md" : "CLAUDE.md";
+}
+
 export function cloneConfig(config: GovernanceConfig): GovernanceConfig {
   return JSON.parse(JSON.stringify(config)) as GovernanceConfig;
 }
@@ -858,11 +883,7 @@ export function severityBreakdown(config: GovernanceConfig): Record<Severity, nu
 }
 
 export function isCloudConfigured(config: GovernanceConfig): boolean {
-  return (
-    config.dbt_cloud.enabled &&
-    config.dbt_cloud.account_id > 0 &&
-    config.dbt_cloud.environment_id > 0
-  );
+  return config.dbt_cloud.enabled && config.dbt_cloud.account_id > 0;
 }
 
 function capitalize(value: string): string {

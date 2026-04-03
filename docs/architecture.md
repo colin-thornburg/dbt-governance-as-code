@@ -218,8 +218,8 @@ dbt-governance scan --cloud --with-ai
 
 ```bash
 # Same config pattern, different environment — change the config or env vars
-DBT_CLOUD_ACCOUNT_ID=257364 \
-DBT_CLOUD_ENVIRONMENT_ID=432623 \
+DBT_CLOUD_ACCOUNT_ID=123456 \
+DBT_CLOUD_ENVIRONMENT_ID=789012 \
 dbt-governance scan --cloud
 ```
 

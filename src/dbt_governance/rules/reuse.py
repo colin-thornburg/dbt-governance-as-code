@@ -257,7 +257,17 @@ def _build_similarity_edges(
 
 def _shared_model_name(model_names: list[str], shared_inputs: list[str]) -> str:
     if shared_inputs:
-        return f"int_{'_'.join(sorted(shared_inputs)[:2])}_shared"
+        clean: list[str] = []
+        for inp in sorted(shared_inputs)[:2]:
+            if inp.startswith("ref_"):
+                clean.append(inp[4:])  # strip "ref_" → "stg_orders"
+            elif inp.startswith("source_"):
+                # "source_ecommerce_raw_orders" → keep only the table part
+                parts = inp.split("_", 2)
+                clean.append(parts[2] if len(parts) > 2 else inp)
+            else:
+                clean.append(inp)
+        return f"int_{'_'.join(clean)}_shared"
 
     cleaned = []
     for name in model_names[:2]:

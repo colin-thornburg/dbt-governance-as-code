@@ -1,0 +1,43 @@
+version: 2
+
+sources:
+  - name: ecommerce
+    schema: main
+    description: "Raw ecommerce data loaded via dbt seeds"
+    tables:
+      - name: raw_orders
+        description: "Raw order records from the ecommerce platform"
+        columns:
+          - name: order_id
+            description: "Unique order identifier"
+          - name: customer_id
+            description: "FK to raw_customers"
+          - name: status
+            description: "Order status: pending, completed, cancelled"
+          - name: amount
+            description: "Order total in USD"
+          - name: created_at
+          - name: updated_at
+
+      - name: raw_customers
+        description: "Raw customer records"
+        columns:
+          - name: customer_id
+          - name: name
+          - name: email
+          - name: plan
+            description: "Subscription tier: free, pro, enterprise"
+          - name: country
+          - name: created_at
+
+      - name: raw_payments
+        description: "Raw payment transactions linked to orders"
+        columns:
+          - name: payment_id
+          - name: order_id
+          - name: amount
+          - name: method
+            description: "Payment method: credit_card, debit_card, paypal, bank_transfer"
+          - name: status
+            description: "Payment status: succeeded, failed, pending"
+          - name: created_at

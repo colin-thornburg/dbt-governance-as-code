@@ -1,0 +1,16 @@
+payment_id,order_id,amount,method,status,created_at
+1,1,120.00,credit_card,succeeded,2024-01-21
+2,3,89.99,credit_card,succeeded,2024-02-02
+3,4,200.00,paypal,failed,2024-02-06
+4,5,55.00,debit_card,succeeded,2024-02-11
+5,6,32.00,credit_card,succeeded,2024-02-16
+6,8,340.00,bank_transfer,succeeded,2024-03-02
+7,9,65.00,credit_card,succeeded,2024-03-06
+8,10,420.00,bank_transfer,succeeded,2024-03-11
+9,11,95.00,credit_card,failed,2024-03-16
+10,12,110.00,debit_card,succeeded,2024-03-21
+11,14,250.00,credit_card,succeeded,2024-03-29
+12,15,88.00,paypal,succeeded,2024-03-31
+13,2,45.50,credit_card,pending,2024-01-22
+14,7,178.50,bank_transfer,pending,2024-02-20
+15,13,28.00,paypal,pending,2024-03-25

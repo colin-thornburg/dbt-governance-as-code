@@ -160,10 +160,11 @@ class AIReviewEngine:
                 "Install it with: pip install 'dbt-governance[ai]'"
             )
 
-        from dbt_governance.ai.prompts import SYSTEM_PROMPT, build_review_prompt
+        from dbt_governance.ai.prompts import build_review_prompt, build_system_prompt
 
         api_key = os.environ.get(api_key_env_var, "")
         client = anthropic.AsyncAnthropic(api_key=api_key)
+        system_prompt = build_system_prompt(self.config.ai_review.additional_instructions)
         violations: list[Violation] = []
 
         for model in models:
@@ -172,7 +173,7 @@ class AIReviewEngine:
                 response = await client.messages.create(
                     model=model_name,
                     max_tokens=self.config.ai_review.max_tokens_per_review,
-                    system=SYSTEM_PROMPT,
+                    system=system_prompt,
                     messages=[{"role": "user", "content": prompt}],
                 )
                 usage.add(
@@ -210,10 +211,11 @@ class AIReviewEngine:
                 "Install it with: pip install 'dbt-governance[openai]'"
             )
 
-        from dbt_governance.ai.prompts import SYSTEM_PROMPT, build_review_prompt
+        from dbt_governance.ai.prompts import build_review_prompt, build_system_prompt
 
         api_key = os.environ.get(api_key_env_var, "")
         client = AsyncOpenAI(api_key=api_key)
+        system_prompt = build_system_prompt(self.config.ai_review.additional_instructions)
         violations: list[Violation] = []
 
         for model in models:
@@ -223,7 +225,7 @@ class AIReviewEngine:
                     model=model_name,
                     max_completion_tokens=self.config.ai_review.max_tokens_per_review,
                     messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "system", "content": system_prompt},
                         {"role": "user", "content": prompt},
                     ],
                 )
@@ -264,10 +266,11 @@ class AIReviewEngine:
                 "Install it with: pip install 'dbt-governance[gemini]'"
             )
 
-        from dbt_governance.ai.prompts import SYSTEM_PROMPT, build_review_prompt
+        from dbt_governance.ai.prompts import build_review_prompt, build_system_prompt
 
         api_key = os.environ.get(api_key_env_var, "")
         client = genai.Client(api_key=api_key)
+        system_prompt = build_system_prompt(self.config.ai_review.additional_instructions)
         violations: list[Violation] = []
 
         for model in models:
@@ -277,7 +280,7 @@ class AIReviewEngine:
                     model=model_name,
                     contents=prompt,
                     config=genai_types.GenerateContentConfig(
-                        system_instruction=SYSTEM_PROMPT,
+                        system_instruction=system_prompt,
                         max_output_tokens=self.config.ai_review.max_tokens_per_review,
                     ),
                 )

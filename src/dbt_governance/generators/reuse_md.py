@@ -75,7 +75,7 @@ def _render_executive_summary(result: ScanResult) -> list[str]:
             "",
             "No material re-use remediation work is currently prioritized from this scan.",
             "",
-            "Governance recommendation: keep monitoring new migrations and review future scan results for emerging consolidation opportunities.",
+            "Governance recommendation: keep monitoring new models and review future scan results for emerging consolidation opportunities.",
             "",
         ]
 
@@ -108,7 +108,7 @@ def _render_executive_summary(result: ScanResult) -> list[str]:
         lines.append("")
 
     lines.append(
-        "Governance recommendation: assign the top items first, starting with clusters because they usually remove the most duplicated migration logic in the least time."
+        "Governance recommendation: assign the top items first, starting with clusters because they usually remove the most duplicated transformation logic in the least time."
     )
     lines.append("")
     return lines
@@ -150,7 +150,7 @@ def generate_reuse_md(result: ScanResult) -> str:
             f"- Clusters: {report.cluster_count}",
             f"- Remaining pairs: {report.remaining_pair_count}",
             "",
-            "Work the queue in order. Clusters are listed first because they usually remove the most migration redundancy in the least time.",
+            "Work the queue in order. Clusters are listed first because they usually remove the most redundant transformation logic in the least time.",
             "",
             "## Prioritized Actions",
             "",

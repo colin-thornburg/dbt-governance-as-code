@@ -52,3 +52,6 @@ desktop.ini
 # ── Temp / scan output ──────────────────────────────────────────
 .tmp-*
 live-scan*.json
+
+# Demo fixture — version SQL/YAML only, not an embedded git working tree
+demo-project/.git/

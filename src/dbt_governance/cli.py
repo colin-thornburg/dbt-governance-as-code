@@ -14,7 +14,7 @@ from rich.console import Console
 
 from dbt_governance import __version__
 from dbt_governance.config import Severity, generate_default_config, load_config
-from dbt_governance.generators import write_claude_md, write_review_md, write_reuse_md
+from dbt_governance.generators import write_claude_md, write_gemini_md, write_review_md, write_reuse_md
 from dbt_governance.output.github import publish_github_check
 from dbt_governance.output.json_report import write_json
 from dbt_governance.output.sarif import to_sarif, write_sarif
@@ -215,13 +215,53 @@ def list_rules():
 
 @app.command("cloud")
 def cloud_commands(
-    action: str = typer.Argument(..., help="Action: test-connection"),
+    action: str = typer.Argument(..., help="Action: test-connection, list-environments"),
     config: str = typer.Option(".dbt-governance.yml", "--config", "-c"),
 ):
     """dbt Cloud API commands."""
     import asyncio
 
-    if action == "test-connection":
+    if action == "list-environments":
+        cfg = load_config(config)
+        if not cfg.dbt_cloud.enabled:
+            console.print("[yellow]dbt Cloud is not enabled in your config.[/yellow]")
+            raise typer.Exit(1)
+
+        from dbt_governance.cloud.admin import AdminClient
+        from dbt_governance.cloud.client import CloudHTTPClient
+
+        async def _list():
+            http = CloudHTTPClient()
+            try:
+                admin = AdminClient(cfg.dbt_cloud.api_base_url, cfg.dbt_cloud.account_id, http)  # type: ignore
+                return await admin.list_environments()
+            finally:
+                await http.close()
+
+        try:
+            envs = asyncio.run(_list())
+            if not envs:
+                console.print("[yellow]No environments found for this account.[/yellow]")
+            else:
+                from rich.table import Table
+                table = Table(title=f"Environments in account {cfg.dbt_cloud.account_id}", show_header=True, header_style="bold")
+                table.add_column("ID", style="cyan")
+                table.add_column("Name")
+                table.add_column("Type")
+                table.add_column("Project ID")
+                for env in envs:
+                    table.add_row(
+                        str(env.get("id", "")),
+                        str(env.get("name", "")),
+                        str(env.get("type", "")),
+                        str(env.get("project_id", "")),
+                    )
+                console.print(table)
+        except EnvironmentError as e:
+            console.print(f"[bold red]Error:[/bold red] {e}")
+            raise typer.Exit(1)
+
+    elif action == "test-connection":
         cfg = load_config(config)
         if not cfg.dbt_cloud.enabled:
             console.print("[yellow]dbt Cloud is not enabled in your config.[/yellow]")
@@ -283,6 +323,21 @@ def generate_claude_md_command(
     """Generate CLAUDE.md from governance config."""
     try:
         path = write_claude_md(config_path=config, output_path=output)
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise typer.Exit(1)
+
+    console.print(f"[green]Created {path}[/green]")
+
+
+@generate_app.command("gemini-md")
+def generate_gemini_md_command(
+    config: str = typer.Option(".dbt-governance.yml", "--config", "-c", help="Path to config file"),
+    output: str = typer.Option("GEMINI.md", "--output", "-o", help="Output file path"),
+):
+    """Generate GEMINI.md from governance config (for Google Gemini CLI)."""
+    try:
+        path = write_gemini_md(config_path=config, output_path=output)
     except Exception as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         raise typer.Exit(1)

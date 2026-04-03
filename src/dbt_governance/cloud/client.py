@@ -55,7 +55,21 @@ class CloudHTTPClient:
                 response.raise_for_status()
                 data = response.json()
                 if "errors" in data:
-                    raise RuntimeError(f"GraphQL errors: {data['errors']}")
+                    errors = data["errors"]
+                    # Emit a clear message for the most common operational error
+                    for err in errors:
+                        code = (err.get("extensions") or {}).get("code", "")
+                        if code == "NO_DATA_AVAILABLE":
+                            env_id = (err.get("extensions") or {}).get("id", "unknown")
+                            raise RuntimeError(
+                                f"No data available for environment {env_id} in the dbt Cloud Discovery API. "
+                                "This usually means:\n"
+                                "  • The environment is a development environment (Discovery API only covers deployment environments)\n"
+                                "  • The environment has never had a successful dbt job run\n"
+                                "  • The environment has no deployed models yet\n\n"
+                                "Fix: select a deployment environment that has had at least one successful job run."
+                            )
+                    raise RuntimeError(f"GraphQL errors: {errors}")
                 return data.get("data", {})
             except (httpx.HTTPStatusError, httpx.ConnectError) as e:
                 last_error = e

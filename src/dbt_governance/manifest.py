@@ -71,7 +71,7 @@ def parse_manifest(raw: dict) -> ManifestData:
         depends_models = [d for d in dep_nodes if d.startswith("model.")]
         depends_sources = [d for d in dep_nodes if d.startswith("source.")]
 
-        config = node.get("config", {})
+        config = node.get("config") or {}
 
         model = ModelNode(
             unique_id=uid,
@@ -90,7 +90,7 @@ def parse_manifest(raw: dict) -> ManifestData:
             tests=tests_by_model.get(uid, []),
             raw_code=node.get("raw_code", node.get("raw_sql", "")),
             compiled_code=node.get("compiled_code", node.get("compiled_sql", "")),
-            contract_enforced=config.get("contract", {}).get("enforced", False),
+            contract_enforced=(config.get("contract") or {}).get("enforced", False),
             access=node.get("access"),
             group=node.get("group"),
         )

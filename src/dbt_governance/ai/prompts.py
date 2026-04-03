@@ -48,6 +48,13 @@ Only flag real issues — do not invent violations for well-written code.
 """
 
 
+def build_system_prompt(additional_instructions: str = "") -> str:
+    """Return the system prompt, optionally appending team-specific instructions."""
+    if not additional_instructions or not additional_instructions.strip():
+        return SYSTEM_PROMPT
+    return SYSTEM_PROMPT + "\n\n## Additional team-specific rules\n" + additional_instructions.strip() + "\n"
+
+
 def build_review_prompt(model: ModelNode) -> str:
     """Build a review prompt for a single model node."""
     parts = [

@@ -1,15 +1,15 @@
 version: 1
 
 project:
-  name: "AIDP Core"
-  description: "Governance rules for the aidp-core dbt Cloud project"
+  name: "My dbt Project"
+  description: "Governance rules for my dbt Cloud project"
 
 dbt_cloud:
   enabled: true
-  account_id: 257364
-  environment_id: 432623
-  api_base_url: "https://cv060.us1.dbt.com"
-  discovery_api_url: "https://cv060.metadata.us1.dbt.com/graphql"
+  account_id: 123456
+  environment_id: 789012
+  api_base_url: "https://cloud.getdbt.com"
+  discovery_api_url: "https://metadata.cloud.getdbt.com/graphql"
   state_type: "applied"
   include_catalog: true
   include_execution_info: true

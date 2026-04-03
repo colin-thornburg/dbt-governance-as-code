@@ -37,6 +37,11 @@ class AdminClient:
         data = await self.http.get(self._url("projects/"))
         return data.get("data", [])
 
+    async def list_environments(self) -> list[dict]:
+        """List all environments visible to the current account token."""
+        data = await self.http.get(self._url("environments/"))
+        return data.get("data", [])
+
     async def get_environment(self, environment_id: int) -> dict:
         """Get environment metadata."""
         url = self._url(f"environments/{environment_id}/")

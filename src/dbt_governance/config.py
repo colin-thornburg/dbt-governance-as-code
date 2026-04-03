@@ -87,6 +87,7 @@ class AIReviewRules(BaseModel):
     provider: AIProvider = AIProvider.ANTHROPIC
     model: str = "claude-sonnet-4-20250514"
     max_tokens_per_review: int = 4096
+    additional_instructions: str = ""
     anthropic: AIProviderConfig = Field(default_factory=lambda: AIProviderConfig())
     openai: AIProviderConfig = Field(default_factory=lambda: AIProviderConfig())
     gemini: AIProviderConfig = Field(default_factory=lambda: AIProviderConfig())

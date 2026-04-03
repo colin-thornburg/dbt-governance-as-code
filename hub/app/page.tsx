@@ -7,7 +7,9 @@ import {
   cloneConfig,
   countEnabledRules,
   defaultGovernanceConfig,
+  aiMdFilename,
   generateClaudeMd,
+  generateGeminiMd,
   generateReviewMd,
   generateYaml,
   isCloudConfigured,
@@ -22,7 +24,6 @@ import {
 
 type PreviewMode = "yaml" | "review" | "claude";
 type WorkspaceTab = CategoryKey | "artifacts" | "run";
-type ScanScope = "single" | "all";
 
 const severityOptions: Severity[] = ["error", "warning", "info"];
 const aiProviderOptions: { value: AiProvider; label: string }[] = [
@@ -45,6 +46,7 @@ const openaiModels: Array<{ value: string; label: string }> = [
 const geminiModels: Array<{ value: string; label: string }> = [
   { value: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro" },
   { value: "gemini-3-flash-preview", label: "Gemini 3 Flash" },
+  { value: "gemini-3.1-flash-lite-preview", label: "Gemini 3.1 Flash Lite" },
   { value: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
   { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
 ];
@@ -53,7 +55,7 @@ const workspaceTabs: Array<{ key: WorkspaceTab; label: string; group?: string }>
   ...categoryDefinitions.map((category) => ({
     key: category.key,
     label: category.title.replace(" Rules", ""),
-    group: category.key === "migration" || category.key === "reuse" ? "migration" : "standard"
+    group: category.key === "reuse" ? "migration" : "standard"
   })),
   { key: "artifacts", label: "Artifacts" },
   { key: "run", label: "Run Scan" }
@@ -68,15 +70,15 @@ const explainerSteps = [
   },
   {
     title: "2. Download three files",
-    body: "Hit Download to get your `.dbt-governance.yml`, `REVIEW.md`, and `CLAUDE.md`. Commit all three to the root of your dbt repository."
+    body: "Hit Download to get your `.dbt-governance.yml`, `REVIEW.md`, and your AI context file (`CLAUDE.md` for Anthropic/OpenAI, `GEMINI.md` for Google). Commit all three to the root of your dbt repository."
   },
   {
     title: "3. CI catches violations automatically",
     body: "On every PR, `dbt-governance scan` reads your config and checks every changed model. Violations appear as inline annotations and can fail the CI check."
   },
   {
-    title: "4. Claude Code Review adds semantic judgment",
-    body: "Because `REVIEW.md` and `CLAUDE.md` are committed, Claude Code Review reads them on every PR and leaves inline comments for things a static scanner misses."
+    title: "4. AI Code Review adds semantic judgment",
+    body: "Because `REVIEW.md` and your AI context file are committed, your AI assistant (Claude Code, Gemini CLI, etc.) reads them on every PR and leaves inline comments for things a static scanner misses."
   }
 ];
 
@@ -226,7 +228,7 @@ interface ReuseReport {
 interface ScanResult {
   scan_id: string;
   timestamp: string;
-  project: string;
+  project_name: string;
   summary: {
     models_scanned: number;
     rules_evaluated: number;
@@ -250,19 +252,66 @@ export default function Home() {
   const [showExplainer, setShowExplainer] = useState<boolean>(false);
   const [explainerTab, setExplainerTab] = useState<"flow" | "setup" | "experience" | "faq">("flow");
   const [showSettings, setShowSettings] = useState<boolean>(false);
+  const [namingInfoOpen, setNamingInfoOpen] = useState<boolean>(false);
+  const [namingInfoPos, setNamingInfoPos] = useState<{ top: number; left: number } | null>(null);
+  const namingIconRef = useRef<HTMLSpanElement>(null);
+  const namingPopoverRef = useRef<HTMLDivElement>(null);
+
+  const [structureInfoOpen, setStructureInfoOpen] = useState<boolean>(false);
+  const [structureInfoPos, setStructureInfoPos] = useState<{ top: number; left: number } | null>(null);
+  const structureIconRef = useRef<HTMLSpanElement>(null);
+  const structurePopoverRef = useRef<HTMLDivElement>(null);
+
+  const [testingInfoOpen, setTestingInfoOpen] = useState<boolean>(false);
+  const [testingInfoPos, setTestingInfoPos] = useState<{ top: number; left: number } | null>(null);
+  const testingIconRef = useRef<HTMLSpanElement>(null);
+  const testingPopoverRef = useRef<HTMLDivElement>(null);
+
+  const [documentationInfoOpen, setDocumentationInfoOpen] = useState<boolean>(false);
+  const [documentationInfoPos, setDocumentationInfoPos] = useState<{ top: number; left: number } | null>(null);
+  const documentationIconRef = useRef<HTMLSpanElement>(null);
+  const documentationPopoverRef = useRef<HTMLDivElement>(null);
+
+  const [materializationInfoOpen, setMaterializationInfoOpen] = useState<boolean>(false);
+  const [materializationInfoPos, setMaterializationInfoPos] = useState<{ top: number; left: number } | null>(null);
+  const materializationIconRef = useRef<HTMLSpanElement>(null);
+  const materializationPopoverRef = useRef<HTMLDivElement>(null);
+
+  const [styleInfoOpen, setStyleInfoOpen] = useState<boolean>(false);
+  const [styleInfoPos, setStyleInfoPos] = useState<{ top: number; left: number } | null>(null);
+  const styleIconRef = useRef<HTMLSpanElement>(null);
+  const stylePopoverRef = useRef<HTMLDivElement>(null);
+
+  const [artifactsInfoOpen, setArtifactsInfoOpen] = useState<boolean>(false);
+  const [artifactsInfoPos, setArtifactsInfoPos] = useState<{ top: number; left: number } | null>(null);
+  const artifactsIconRef = useRef<HTMLSpanElement>(null);
+  const artifactsPopoverRef = useRef<HTMLDivElement>(null);
 
   // Scan runner state
   const [scanMode, setScanMode] = useState<"cloud" | "local">("cloud");
-  const [scanScope, setScanScope] = useState<ScanScope>("single");
+  const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
   const [manifestPath, setManifestPath] = useState("target/manifest.json");
+  const [projectDir, setProjectDir] = useState("");
   const [withAiScan, setWithAiScan] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
+  // Environment selection
+  const [selectedEnvIds, setSelectedEnvIds] = useState<Set<number>>(new Set());
+  // Reuse-tab dedicated scan
+  const [reuseResult, setReuseResult] = useState<ScanResult | null>(null);
+  const [isReuseScanning, setIsReuseScanning] = useState(false);
+  const [reuseError, setReuseError] = useState<string | null>(null);
 
   // Env var detection for settings drawer
   const [envVars, setEnvVars] = useState<Record<string, boolean>>({});
   const [envLoaded, setEnvLoaded] = useState(false);
+
+  // dbt Cloud environment picker
+  type CloudEnv = { id: number; name: string; project_id: number; project_name: string; type: string };
+  const [cloudEnvs, setCloudEnvs] = useState<CloudEnv[]>([]);
+  const [cloudEnvFetch, setCloudEnvFetch] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [cloudEnvError, setCloudEnvError] = useState<string>("");
 
   useEffect(() => {
     if (showSettings && !envLoaded) {
@@ -272,6 +321,13 @@ export default function Home() {
         .catch(() => setEnvLoaded(true));
     }
   }, [showSettings, envLoaded]);
+
+  // Reset environment list whenever account_id changes
+  useEffect(() => {
+    setCloudEnvFetch("idle");
+    setCloudEnvs([]);
+    setCloudEnvError("");
+  }, [config.dbt_cloud.account_id]);
 
   // Project name inline editing
   const nameRef = useRef<HTMLInputElement>(null);
@@ -283,7 +339,26 @@ export default function Home() {
   const severities = useMemo(() => severityBreakdown(config), [config]);
   const yamlPreview = useMemo(() => generateYaml(config), [config]);
   const reviewPreview = useMemo(() => generateReviewMd(config), [config]);
-  const claudePreview = useMemo(() => generateClaudeMd(config), [config]);
+  const aiMdPreview = useMemo(
+    () => config.ai_provider.provider === "gemini" ? generateGeminiMd(config) : generateClaudeMd(config),
+    [config]
+  );
+  const aiMdName = aiMdFilename(config.ai_provider.provider);
+
+  // Derived from loaded environments
+  const uniqueProjects = useMemo(() => {
+    const map = new Map<number, string>();
+    cloudEnvs.forEach(e => { if (!map.has(e.project_id)) map.set(e.project_id, e.project_name); });
+    return Array.from(map.entries())
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [cloudEnvs]);
+  const filteredEnvs = selectedProjectId
+    ? cloudEnvs.filter(e => e.project_id === selectedProjectId)
+    : cloudEnvs;
+  const selectedProjectName = selectedProjectId
+    ? (uniqueProjects.find(p => p.id === selectedProjectId)?.name ?? "Unknown project")
+    : "all projects";
 
   // Close drawer/modal on Escape
   useEffect(() => {
@@ -291,11 +366,102 @@ export default function Home() {
       if (e.key === "Escape") {
         setShowSettings(false);
         setShowExplainer(false);
+        setNamingInfoOpen(false);
+        setStructureInfoOpen(false);
+        setTestingInfoOpen(false);
+        setDocumentationInfoOpen(false);
+        setMaterializationInfoOpen(false);
+        setStyleInfoOpen(false);
+        setArtifactsInfoOpen(false);
       }
     }
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
   }, []);
+
+  useEffect(() => {
+    if (!namingInfoOpen) return;
+    function handleClickOutside(e: MouseEvent) {
+      const target = e.target as Node;
+      const inIcon = namingIconRef.current?.contains(target);
+      const inPopover = namingPopoverRef.current?.contains(target);
+      if (!inIcon && !inPopover) setNamingInfoOpen(false);
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [namingInfoOpen]);
+
+  useEffect(() => {
+    if (!structureInfoOpen) return;
+    function handleClickOutside(e: MouseEvent) {
+      const target = e.target as Node;
+      if (!structureIconRef.current?.contains(target) && !structurePopoverRef.current?.contains(target)) {
+        setStructureInfoOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [structureInfoOpen]);
+
+  useEffect(() => {
+    if (!testingInfoOpen) return;
+    function handleClickOutside(e: MouseEvent) {
+      const target = e.target as Node;
+      if (!testingIconRef.current?.contains(target) && !testingPopoverRef.current?.contains(target)) {
+        setTestingInfoOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [testingInfoOpen]);
+
+  useEffect(() => {
+    if (!documentationInfoOpen) return;
+    function handleClickOutside(e: MouseEvent) {
+      const target = e.target as Node;
+      if (!documentationIconRef.current?.contains(target) && !documentationPopoverRef.current?.contains(target)) {
+        setDocumentationInfoOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [documentationInfoOpen]);
+
+  useEffect(() => {
+    if (!materializationInfoOpen) return;
+    function handleClickOutside(e: MouseEvent) {
+      const target = e.target as Node;
+      if (!materializationIconRef.current?.contains(target) && !materializationPopoverRef.current?.contains(target)) {
+        setMaterializationInfoOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [materializationInfoOpen]);
+
+  useEffect(() => {
+    if (!styleInfoOpen) return;
+    function handleClickOutside(e: MouseEvent) {
+      const target = e.target as Node;
+      if (!styleIconRef.current?.contains(target) && !stylePopoverRef.current?.contains(target)) {
+        setStyleInfoOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [styleInfoOpen]);
+
+  useEffect(() => {
+    if (!artifactsInfoOpen) return;
+    function handleClickOutside(e: MouseEvent) {
+      const target = e.target as Node;
+      if (!artifactsIconRef.current?.contains(target) && !artifactsPopoverRef.current?.contains(target)) {
+        setArtifactsInfoOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [artifactsInfoOpen]);
 
   function updateConfig(updater: (current: GovernanceConfig) => void) {
     setConfig((current) => {
@@ -315,7 +481,7 @@ export default function Home() {
 
   function previewContent(): string {
     if (previewMode === "review") return reviewPreview;
-    if (previewMode === "claude") return claudePreview;
+    if (previewMode === "claude") return aiMdPreview;
     return yamlPreview;
   }
 
@@ -323,6 +489,66 @@ export default function Home() {
     await navigator.clipboard.writeText(previewContent());
     setCopiedLabel(`${previewMode.toUpperCase()} copied`);
     window.setTimeout(() => setCopiedLabel(""), 1500);
+  }
+
+  // Common production environment name patterns
+  const PROD_PATTERNS = ["prod", "production", "prd", "main", "master", "release", "live", "primary", "default"];
+  function isProdEnv(name: string): boolean {
+    const n = name.toLowerCase().replace(/[^a-z0-9]/g, "");
+    return PROD_PATTERNS.some(p => n === p || n.startsWith(p) || n.endsWith(p));
+  }
+
+  function selectProdEnvs() {
+    const scope = selectedProjectId ? cloudEnvs.filter(e => e.project_id === selectedProjectId) : cloudEnvs;
+    const prodIds = new Set(scope.filter(e => isProdEnv(e.name)).map(e => e.id));
+    setSelectedEnvIds(prodIds.size > 0 ? prodIds : new Set(scope.map(e => e.id)));
+  }
+  function selectAllEnvs() {
+    const scope = selectedProjectId ? cloudEnvs.filter(e => e.project_id === selectedProjectId) : cloudEnvs;
+    setSelectedEnvIds(new Set(scope.map(e => e.id)));
+  }
+  function clearEnvs() { setSelectedEnvIds(new Set()); }
+  function toggleEnv(id: number, checked: boolean) {
+    setSelectedEnvIds(prev => {
+      const next = new Set(prev);
+      if (checked) next.add(id); else next.delete(id);
+      return next;
+    });
+  }
+
+  async function fetchCloudEnvironments() {
+    if (!config.dbt_cloud.account_id) return;
+    setCloudEnvFetch("loading");
+    setCloudEnvError("");
+    try {
+      const params = new URLSearchParams({
+        account_id: String(config.dbt_cloud.account_id),
+        api_base_url: config.dbt_cloud.api_base_url,
+      });
+      const res = await fetch(`/api/dbt-cloud/environments?${params}`);
+      const data = await res.json() as { environments?: { id: number; name: string; project_id: number; project_name: string; type: string }[]; error?: string };
+      if (data.error) throw new Error(data.error);
+      const envs = data.environments ?? [];
+      setCloudEnvs(envs);
+      setCloudEnvFetch("done");
+      // Auto-select production environments for multi-env scanning
+      const prodIds = new Set(envs.filter(e => {
+        const n = e.name.toLowerCase().replace(/[^a-z0-9]/g, "");
+        return ["prod","production","prd","main","master","release","live","primary","default"].some(
+          p => n === p || n.startsWith(p) || n.endsWith(p)
+        );
+      }).map(e => e.id));
+      if (prodIds.size > 0) setSelectedEnvIds(prodIds);
+      else if (envs.length > 0) setSelectedEnvIds(new Set(envs.map(e => e.id)));
+      // Auto-select first real env for config if currently unset
+      if (config.dbt_cloud.environment_id === 0 && envs.length > 0) {
+        const firstProd = envs.find(e => prodIds.has(e.id)) ?? envs[0];
+        updateConfig((next) => { next.dbt_cloud.environment_id = firstProd.id; });
+      }
+    } catch (e) {
+      setCloudEnvError(e instanceof Error ? e.message : "Failed to fetch environments");
+      setCloudEnvFetch("error");
+    }
   }
 
   async function copyCommand(text: string, key: string) {
@@ -336,13 +562,22 @@ export default function Home() {
     setScanResult(null);
     setScanError(null);
     try {
+      // For cloud mode, use the first selected environment
+      let configYamlForScan = yamlPreview;
+      if (scanMode === "cloud" && selectedEnvIds.size > 0) {
+        const firstEnvId = Array.from(selectedEnvIds)[0];
+        const configForScan = cloneConfig(config);
+        configForScan.dbt_cloud.environment_id = firstEnvId;
+        configYamlForScan = generateYaml(configForScan);
+      }
       const response = await fetch("/api/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          configYaml: yamlPreview,
+          configYaml: configYamlForScan,
           mode: scanMode,
           manifestPath: scanMode === "local" ? manifestPath : undefined,
+          projectDir: scanMode === "local" && projectDir ? projectDir : undefined,
           withAi: withAiScan
         })
       });
@@ -356,6 +591,43 @@ export default function Home() {
       setScanError(err instanceof Error ? err.message : "Network error");
     } finally {
       setIsScanning(false);
+    }
+  }
+
+  async function runReuseScan() {
+    setIsReuseScanning(true);
+    setReuseResult(null);
+    setReuseError(null);
+    try {
+      let configYamlForScan = yamlPreview;
+      if (scanMode === "cloud" && selectedEnvIds.size > 0) {
+        const firstEnvId = Array.from(selectedEnvIds)[0];
+        const configForScan = cloneConfig(config);
+        configForScan.dbt_cloud.environment_id = firstEnvId;
+        configYamlForScan = generateYaml(configForScan);
+      }
+      const response = await fetch("/api/scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          configYaml: configYamlForScan,
+          mode: scanMode,
+          manifestPath: scanMode === "local" ? manifestPath : undefined,
+          projectDir: scanMode === "local" && projectDir ? projectDir : undefined,
+          withAi: false,
+          ruleCategories: ["reuse"],
+        }),
+      });
+      const data = await response.json();
+      if (data.success) {
+        setReuseResult(data.result as ScanResult);
+      } else {
+        setReuseError(data.error ?? "Scan failed");
+      }
+    } catch (err: unknown) {
+      setReuseError(err instanceof Error ? err.message : "Network error");
+    } finally {
+      setIsReuseScanning(false);
     }
   }
 
@@ -425,7 +697,7 @@ export default function Home() {
       "",
       "<!-- Auto-generated by dbt-governance -->",
       "",
-      `Project: ${result.project}`,
+      `Project: ${result.project_name || "—"}`,
       `Generated at: ${result.timestamp}`,
       "",
     ];
@@ -436,7 +708,7 @@ export default function Home() {
         "",
         "No material re-use remediation work is currently prioritized from this scan.",
         "",
-        "Governance recommendation: keep monitoring new migrations and review future scan results for emerging consolidation opportunities.",
+        "Governance recommendation: keep monitoring new models and review future scan results for emerging consolidation opportunities.",
         "",
         "## Summary",
         "",
@@ -469,7 +741,7 @@ export default function Home() {
         return `- ${action.priority[0].toUpperCase()}${action.priority.slice(1)} priority ${action.recommendation_type}: consolidate ${focusTarget} into \`${sharedModel}\`.`;
       }),
       "",
-      "Governance recommendation: assign the top items first, starting with clusters because they usually remove the most duplicated migration logic in the least time.",
+      "Governance recommendation: assign the top items first, starting with clusters because they usually remove the most duplicated transformation logic in the least time.",
       "",
       "## Summary",
       "",
@@ -477,7 +749,7 @@ export default function Home() {
       `- Clusters: ${report.cluster_count}`,
       `- Remaining pairs: ${report.remaining_pair_count}`,
       "",
-      "Work the queue in order. Clusters are listed first because they usually remove the most migration redundancy in the least time.",
+      "Work the queue in order. Clusters are listed first because they usually remove the most redundant transformation logic in the least time.",
       "",
       "## Prioritized Actions",
       "",
@@ -547,8 +819,8 @@ export default function Home() {
         ? "Run the scanner"
         : `Tune ${activeCategory?.title ?? "rules"}`;
 
-  // Migration tab hint — shown when there are migration/reuse categories
-  const isMigrationTab = activeTab === "migration" || activeTab === "reuse";
+  // Reuse tab — shown when the reuse category is active
+  const isMigrationTab = activeTab === "reuse";
 
   return (
     <main className="shell">
@@ -642,7 +914,7 @@ export default function Home() {
                 </button>
               ))}
 
-            <p className="tab-group-label migration-label">Migration &amp; Re-use</p>
+            <p className="tab-group-label migration-label">Re-use</p>
             {workspaceTabs
               .filter((t) => t.group === "migration")
               .map((tab) => (
@@ -682,15 +954,9 @@ export default function Home() {
             <section className={`panel category-panel${isMigrationTab ? " migration-panel" : ""}`}>
               {isMigrationTab && (
                 <div className="migration-banner">
-                  <strong>
-                    {activeTab === "migration"
-                      ? "Legacy Migration Report"
-                      : "Re-use Opportunities"}
-                  </strong>
+                  <strong>Re-use Opportunities</strong>
                   <p>
-                    {activeTab === "migration"
-                      ? "These rules surface technical debt carried in from Talend, Informatica, SSIS, and other ETL tools. Every violation includes a specific remediation step — hand this report to a team and they know exactly what to fix."
-                      : "These rules detect where independent pipelines are doing the same work. Similarity scoring ranks the strongest consolidation candidates first, with confidence bands and suggested shared intermediates so governance teams can act quickly."}
+                    These rules detect where independent pipelines are doing the same work. Similarity scoring ranks the strongest consolidation candidates first, with confidence bands and suggested shared intermediates so governance teams can act quickly.
                   </p>
                 </div>
               )}
@@ -721,14 +987,427 @@ export default function Home() {
                       Discovery preset
                     </button>
                   </div>
+
+                  {/* Dedicated reuse scan */}
+                  <div className="reuse-scan-launcher">
+                    <div className="reuse-scan-intro">
+                      <strong>Scan for redundant models</strong>
+                      <p>Select the projects and environments to scan, then run. Only re-use rules are evaluated — no naming, structure, or style checks.</p>
+                    </div>
+
+                    {/* Mode toggle */}
+                    <div className="mode-toggle reuse-mode-toggle">
+                      <button
+                        className={scanMode === "cloud" ? "mode-btn active" : "mode-btn"}
+                        onClick={() => setScanMode("cloud")}
+                      >Cloud</button>
+                      <button
+                        className={scanMode === "local" ? "mode-btn active" : "mode-btn"}
+                        onClick={() => setScanMode("local")}
+                      >Local</button>
+                    </div>
+
+                    {/* Cloud: project → env selector */}
+                    {scanMode === "cloud" && (
+                      <>
+                        {!cloudConfigured ? (
+                          <p className="scan-hint">
+                            <button className="inline-link" onClick={() => setShowSettings(true)}>Configure dbt Cloud</button>
+                            {" "}in Settings to load environments.
+                          </p>
+                        ) : cloudEnvFetch === "loading" ? (
+                          <p className="env-picker-hint">Loading environments…</p>
+                        ) : cloudEnvFetch !== "done" ? (
+                          <div className="env-picker-fetch-row">
+                            <button className="ghost-button small" onClick={fetchCloudEnvironments}>
+                              Load environments from dbt Cloud
+                            </button>
+                            {cloudEnvFetch === "error" && (
+                              <span className="env-picker-error">{cloudEnvError}</span>
+                            )}
+                          </div>
+                        ) : (
+                          <>
+                            {/* Project picker */}
+                            <div className="reuse-picker-section">
+                              <span className="reuse-picker-label">Project</span>
+                              <div className="project-picker">
+                                {uniqueProjects.map(p => (
+                                  <button
+                                    key={p.id}
+                                    className={`project-card${selectedProjectId === p.id ? " project-card-active" : ""}`}
+                                    onClick={() => {
+                                      setSelectedProjectId(p.id);
+                                      const projEnvs = cloudEnvs.filter(e => e.project_id === p.id);
+                                      const prodIds = new Set(projEnvs.filter(e => isProdEnv(e.name)).map(e => e.id));
+                                      setSelectedEnvIds(prodIds.size > 0 ? prodIds : new Set(projEnvs.map(e => e.id)));
+                                    }}
+                                  >
+                                    {p.name}
+                                    <span className="project-card-count">
+                                      {cloudEnvs.filter(e => e.project_id === p.id).length} env{cloudEnvs.filter(e => e.project_id === p.id).length !== 1 ? "s" : ""}
+                                    </span>
+                                  </button>
+                                ))}
+                                {uniqueProjects.length > 1 && (
+                                  <button
+                                    className={`project-card project-card-all${!selectedProjectId ? " project-card-active" : ""}`}
+                                    onClick={() => {
+                                      setSelectedProjectId(null);
+                                      const allProdIds = new Set(cloudEnvs.filter(e => isProdEnv(e.name)).map(e => e.id));
+                                      setSelectedEnvIds(allProdIds.size > 0 ? allProdIds : new Set(cloudEnvs.map(e => e.id)));
+                                    }}
+                                  >
+                                    All projects
+                                    <span className="project-card-count">{cloudEnvs.length} envs</span>
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Environment checklist */}
+                            <div className="reuse-picker-section">
+                              <div className="reuse-picker-label-row">
+                                <span className="reuse-picker-label">
+                                  {selectedProjectId ? `Environments in ${selectedProjectName}` : "Environments"}
+                                </span>
+                                <div className="env-filter-row">
+                                  <button className="env-filter-btn" onClick={selectProdEnvs}>★ Prod only</button>
+                                  <button className="env-filter-btn" onClick={selectAllEnvs}>All</button>
+                                  <button className="env-filter-btn" onClick={clearEnvs}>None</button>
+                                </div>
+                              </div>
+                              <div className="env-checklist">
+                                {filteredEnvs.map(env => {
+                                  const isProd = isProdEnv(env.name);
+                                  const isDev = env.type === "development";
+                                  return (
+                                    <label
+                                      key={env.id}
+                                      className={`env-check-row${isProd ? " env-is-prod" : ""}${selectedEnvIds.has(env.id) ? " env-checked" : ""}`}
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={selectedEnvIds.has(env.id)}
+                                        onChange={(e) => toggleEnv(env.id, e.target.checked)}
+                                      />
+                                      <span className="env-check-body">
+                                        <span className="env-check-name">{env.name}</span>
+                                        {!selectedProjectId && (
+                                          <span className="env-check-project">{env.project_name}</span>
+                                        )}
+                                      </span>
+                                      {isProd && <span className="env-badge-prod">prod</span>}
+                                      <span className={`env-badge-type${isDev ? " env-badge-dev" : ""}`}>
+                                        {env.type}
+                                      </span>
+                                      <span className="env-check-id">#{env.id}</span>
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                              {Array.from(selectedEnvIds).some(id => cloudEnvs.find(e => e.id === id)?.type === "development") && (
+                                <div className="env-dev-warning" style={{ marginTop: 8 }}>
+                                  <strong>⚠ Development environment selected</strong>
+                                  <p>Discovery API only covers deployment environments with successful job runs.</p>
+                                </div>
+                              )}
+                              <div className="env-multiselect-footer">
+                                <span className="env-count">
+                                  {selectedEnvIds.size} of {filteredEnvs.length} selected
+                                </span>
+                                <button className="ghost-button small" onClick={fetchCloudEnvironments}>↻ Refresh</button>
+                              </div>
+                            </div>
+                          </>
+                        )}
+                      </>
+                    )}
+
+                    {scanMode === "local" && (
+                      <>
+                        <label className="scan-field">
+                          <span>Path to manifest.json</span>
+                          <input
+                            value={manifestPath}
+                            onChange={(e) => setManifestPath(e.target.value)}
+                            placeholder="target/manifest.json"
+                          />
+                        </label>
+                        <label className="scan-field">
+                          <span>dbt project directory <span className="scan-field-hint">(optional — needed if manifest was built with dbt Fusion/Cloud CLI)</span></span>
+                          <input
+                            value={projectDir}
+                            onChange={(e) => setProjectDir(e.target.value)}
+                            placeholder="e.g. demo-project"
+                          />
+                        </label>
+                      </>
+                    )}
+
+                    <button
+                      className="primary-button reuse-scan-btn"
+                      onClick={runReuseScan}
+                      disabled={isReuseScanning || !isDownloadReady || (scanMode === "cloud" && !cloudConfigured)}
+                    >
+                      {isReuseScanning ? (
+                        <span className="scan-spinner">Scanning…</span>
+                      ) : scanMode === "cloud" && cloudEnvFetch === "done" && selectedEnvIds.size > 0 ? (
+                        `Scan ${selectedEnvIds.size} environment${selectedEnvIds.size !== 1 ? "s" : ""}${selectedProjectId ? ` in ${selectedProjectName}` : " across all projects"} →`
+                      ) : (
+                        "Scan for Redundancy →"
+                      )}
+                    </button>
+                  </div>
+
+                  {reuseError && (
+                    <div className="scan-error">
+                      <strong>Scan failed</strong>
+                      <pre>{reuseError}</pre>
+                    </div>
+                  )}
+
+                  {reuseResult && (
+                    <div className="reuse-report">
+                      {/* Header */}
+                      <div className="reuse-report-header">
+                        <div className="reuse-report-title">
+                          <strong>Redundancy Report</strong>
+                          <span className="reuse-report-meta">
+                            {reuseResult.summary.models_scanned} models scanned ·{" "}
+                            {new Date(reuseResult.timestamp).toLocaleTimeString()}
+                          </span>
+                        </div>
+                        <div className="reuse-report-actions">
+                          <button
+                            className="ghost-button small"
+                            onClick={() => downloadFile("REUSE_REPORT.md", reuseReportMarkdown(reuseResult))}
+                          >
+                            Download Report
+                          </button>
+                          <button
+                            className="ghost-button small"
+                            onClick={() => setReuseResult(null)}
+                          >
+                            Clear
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Summary cards */}
+                      {(() => {
+                        const report = reuseResult.reuse_report;
+                        const total = report?.total_recommendations ?? 0;
+                        const clusters = report?.cluster_count ?? 0;
+                        const pairs = report?.remaining_pair_count ?? 0;
+                        const highPriority = report?.prioritized_actions.filter(a => a.priority === "high").length ?? 0;
+                        const riskLevel = highPriority >= 3 || clusters >= 2 ? "High" : highPriority >= 1 || total >= 3 ? "Moderate" : total === 0 ? "None" : "Low";
+                        const riskClass = riskLevel === "High" ? "conf-high" : riskLevel === "Moderate" ? "conf-medium" : riskLevel === "Low" ? "conf-low" : "score-neutral";
+
+                        return (
+                          <>
+                            <div className="reuse-summary-cards">
+                              <div className="reuse-summary-card">
+                                <span className={`score-chip ${riskClass}`}>{riskLevel} risk</span>
+                                <span className="reuse-card-label">Redundancy level</span>
+                              </div>
+                              <div className="reuse-summary-card">
+                                <strong className="reuse-card-num">{total}</strong>
+                                <span className="reuse-card-label">Total opportunities</span>
+                              </div>
+                              <div className="reuse-summary-card">
+                                <strong className="reuse-card-num">{clusters}</strong>
+                                <span className="reuse-card-label">Model clusters</span>
+                              </div>
+                              <div className="reuse-summary-card">
+                                <strong className="reuse-card-num">{pairs}</strong>
+                                <span className="reuse-card-label">Duplicate pairs</span>
+                              </div>
+                            </div>
+
+                            {total === 0 ? (
+                              <div className="scan-clean" style={{ marginTop: 12 }}>
+                                No material redundancy found at the current similarity threshold.
+                              </div>
+                            ) : (
+                              <div className="reuse-queue-list" style={{ marginTop: 12 }}>
+                                {report!.prioritized_actions.map((action, idx) => (
+                                  <div key={`reuse-${idx}`} className="reuse-queue-card">
+                                    <div className="reuse-queue-top">
+                                      <span className={`score-chip ${priorityTone(action.priority)}`}>
+                                        {action.priority} priority
+                                      </span>
+                                      <span className={`score-chip ${confidenceTone(action.confidence_band)}`}>
+                                        {action.confidence_band} confidence
+                                      </span>
+                                      <span className="score-chip score-neutral">
+                                        {action.recommendation_type === "cluster" ? "cluster" : "pair"}
+                                      </span>
+                                      {action.recommendation_type === "pair" && typeof action.similarity_score === "number" && (
+                                        <span className="score-chip score-neutral">
+                                          score {action.similarity_score.toFixed(2)}
+                                        </span>
+                                      )}
+                                      {action.recommendation_type === "cluster" && typeof action.cluster_average_score === "number" && (
+                                        <span className="score-chip score-neutral">
+                                          avg {action.cluster_average_score.toFixed(2)}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <p className="reuse-queue-summary">{action.summary}</p>
+                                    {!!action.model_names.length && (
+                                      <div className="cluster-model-list">
+                                        {action.model_names.map(m => (
+                                          <span key={m} className="score-chip score-neutral">{m}</span>
+                                        ))}
+                                      </div>
+                                    )}
+                                    <div className="similarity-grid">
+                                      {!!action.shared_inputs?.length && (
+                                        <div><span>Shared inputs</span><p>{action.shared_inputs.join(", ")}</p></div>
+                                      )}
+                                      {!!action.shared_selected_columns?.length && (
+                                        <div><span>Shared columns</span><p>{action.shared_selected_columns.join(", ")}</p></div>
+                                      )}
+                                      {!!action.shared_aggregates?.length && (
+                                        <div><span>Shared aggregates</span><p>{action.shared_aggregates.join(", ")}</p></div>
+                                      )}
+                                      {!!action.shared_filters?.length && (
+                                        <div><span>Shared filters</span><p>{action.shared_filters.join(", ")}</p></div>
+                                      )}
+                                    </div>
+                                    {action.suggested_shared_model && (
+                                      <p className="similarity-suggested">
+                                        Suggested shared model: <code>{action.suggested_shared_model}</code>
+                                      </p>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </>
+                        );
+                      })()}
+                    </div>
+                  )}
                 </div>
               )}
 
               <div className="panel-header">
                 <div>
-                  <p className="panel-kicker" style={{ color: activeCategory.accent }}>
-                    {activeCategory.title}
-                  </p>
+                  <div className="panel-kicker-row">
+                    <span className="panel-kicker" style={{ color: activeCategory.accent }}>
+                      {activeCategory.title}
+                    </span>
+                    {activeCategory.key === "naming" && (
+                      <span
+                        ref={namingIconRef}
+                        className={`info-icon-wrap${namingInfoOpen ? " info-locked" : ""}`}
+                        onClick={() => {
+                          if (namingInfoOpen) {
+                            setNamingInfoOpen(false);
+                          } else {
+                            const rect = namingIconRef.current?.getBoundingClientRect();
+                            if (rect) setNamingInfoPos({ top: rect.bottom + 8, left: rect.left });
+                            setNamingInfoOpen(true);
+                          }
+                        }}
+                        title={namingInfoOpen ? undefined : "Click to learn how naming rules are enforced"}
+                      >
+                        <span className="info-icon">i</span>
+                      </span>
+                    )}
+                    {activeCategory.key === "structure" && (
+                      <span
+                        ref={structureIconRef}
+                        className={`info-icon-wrap${structureInfoOpen ? " info-locked" : ""}`}
+                        onClick={() => {
+                          if (structureInfoOpen) {
+                            setStructureInfoOpen(false);
+                          } else {
+                            const rect = structureIconRef.current?.getBoundingClientRect();
+                            if (rect) setStructureInfoPos({ top: rect.bottom + 8, left: rect.left });
+                            setStructureInfoOpen(true);
+                          }
+                        }}
+                        title={structureInfoOpen ? undefined : "Click to learn how structure rules are enforced"}
+                      >
+                        <span className="info-icon">i</span>
+                      </span>
+                    )}
+                    {activeCategory.key === "testing" && (
+                      <span
+                        ref={testingIconRef}
+                        className={`info-icon-wrap${testingInfoOpen ? " info-locked" : ""}`}
+                        onClick={() => {
+                          if (testingInfoOpen) {
+                            setTestingInfoOpen(false);
+                          } else {
+                            const rect = testingIconRef.current?.getBoundingClientRect();
+                            if (rect) setTestingInfoPos({ top: rect.bottom + 8, left: rect.left });
+                            setTestingInfoOpen(true);
+                          }
+                        }}
+                        title={testingInfoOpen ? undefined : "Click to learn how testing rules are enforced"}
+                      >
+                        <span className="info-icon">i</span>
+                      </span>
+                    )}
+                    {activeCategory.key === "documentation" && (
+                      <span
+                        ref={documentationIconRef}
+                        className={`info-icon-wrap${documentationInfoOpen ? " info-locked" : ""}`}
+                        onClick={() => {
+                          if (documentationInfoOpen) {
+                            setDocumentationInfoOpen(false);
+                          } else {
+                            const rect = documentationIconRef.current?.getBoundingClientRect();
+                            if (rect) setDocumentationInfoPos({ top: rect.bottom + 8, left: rect.left });
+                            setDocumentationInfoOpen(true);
+                          }
+                        }}
+                        title={documentationInfoOpen ? undefined : "Click to learn how documentation rules are enforced"}
+                      >
+                        <span className="info-icon">i</span>
+                      </span>
+                    )}
+                    {activeCategory.key === "materialization" && (
+                      <span
+                        ref={materializationIconRef}
+                        className={`info-icon-wrap${materializationInfoOpen ? " info-locked" : ""}`}
+                        onClick={() => {
+                          if (materializationInfoOpen) {
+                            setMaterializationInfoOpen(false);
+                          } else {
+                            const rect = materializationIconRef.current?.getBoundingClientRect();
+                            if (rect) setMaterializationInfoPos({ top: rect.bottom + 8, left: rect.left });
+                            setMaterializationInfoOpen(true);
+                          }
+                        }}
+                        title={materializationInfoOpen ? undefined : "Click to learn how materialization rules are enforced"}
+                      >
+                        <span className="info-icon">i</span>
+                      </span>
+                    )}
+                    {activeCategory.key === "style" && (
+                      <span
+                        ref={styleIconRef}
+                        className={`info-icon-wrap${styleInfoOpen ? " info-locked" : ""}`}
+                        onClick={() => {
+                          if (styleInfoOpen) {
+                            setStyleInfoOpen(false);
+                          } else {
+                            const rect = styleIconRef.current?.getBoundingClientRect();
+                            if (rect) setStyleInfoPos({ top: rect.bottom + 8, left: rect.left });
+                            setStyleInfoOpen(true);
+                          }
+                        }}
+                        title={styleInfoOpen ? undefined : "Click to learn how SQL style rules are enforced"}
+                      >
+                        <span className="info-icon">i</span>
+                      </span>
+                    )}
+                  </div>
                   <h2>{activeCategory.description}</h2>
                 </div>
                 <label className="switch">
@@ -827,7 +1506,25 @@ export default function Home() {
             <div className="panel sticky-panel">
               <div className="panel-header compact">
                 <div>
-                  <p className="panel-kicker">Generated Artifacts</p>
+                  <div className="panel-kicker-row">
+                    <span className="panel-kicker">Generated Artifacts</span>
+                    <span
+                      ref={artifactsIconRef}
+                      className={`info-icon-wrap${artifactsInfoOpen ? " info-locked" : ""}`}
+                      onClick={() => {
+                        if (artifactsInfoOpen) {
+                          setArtifactsInfoOpen(false);
+                        } else {
+                          const rect = artifactsIconRef.current?.getBoundingClientRect();
+                          if (rect) setArtifactsInfoPos({ top: rect.bottom + 8, left: rect.left });
+                          setArtifactsInfoOpen(true);
+                        }
+                      }}
+                      title={artifactsInfoOpen ? undefined : "What is this section?"}
+                    >
+                      <span className="info-icon">i</span>
+                    </span>
+                  </div>
                   <h2>Live previews and downloads</h2>
                 </div>
                 <div className="chip-row">
@@ -837,7 +1534,7 @@ export default function Home() {
                       className={mode === previewMode ? "chip active" : "chip"}
                       onClick={() => setPreviewMode(mode)}
                     >
-                      {mode === "yaml" ? ".dbt-governance.yml" : mode === "review" ? "REVIEW.md" : "CLAUDE.md"}
+                      {mode === "yaml" ? ".dbt-governance.yml" : mode === "review" ? "REVIEW.md" : aiMdName}
                     </button>
                   ))}
                 </div>
@@ -850,8 +1547,8 @@ export default function Home() {
                 <button className="primary-button secondary" onClick={() => downloadFile("REVIEW.md", reviewPreview)}>
                   Download REVIEW.md
                 </button>
-                <button className="primary-button secondary" onClick={() => downloadFile("CLAUDE.md", claudePreview)}>
-                  Download CLAUDE.md
+                <button className="primary-button secondary" onClick={() => downloadFile(aiMdName, aiMdPreview)}>
+                  Download {aiMdName}
                 </button>
                 {scanResult && (
                   <button
@@ -888,412 +1585,27 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* Scan scope toggle */}
-              <div className="scan-scope-row">
-                <p className="scan-scope-label">Scan scope</p>
+              <div className="scan-launcher">
+                {/* Mode toggle */}
                 <div className="mode-toggle">
                   <button
-                    className={scanScope === "single" ? "mode-btn active" : "mode-btn"}
-                    onClick={() => setScanScope("single")}
+                    className={scanMode === "cloud" ? "mode-btn active" : "mode-btn"}
+                    onClick={() => setScanMode("cloud")}
                   >
-                    This project
+                    Cloud mode
                   </button>
                   <button
-                    className={scanScope === "all" ? "mode-btn active" : "mode-btn"}
-                    onClick={() => setScanScope("all")}
+                    className={scanMode === "local" ? "mode-btn active" : "mode-btn"}
+                    onClick={() => setScanMode("local")}
                   >
-                    All projects in account
+                    Local mode
                   </button>
                 </div>
-              </div>
 
-              {/* Single project scan */}
-              {scanScope === "single" && (
-                <div className="scan-launcher">
-                  <p className="panel-kicker">Run from this UI</p>
-                  <p className="run-intro">
-                    Runs <code className="inline-code">dbt-governance scan</code> on your server.
-                    Requires <code className="inline-code">dbt-governance</code> installed in the same Python
-                    environment as this app.
-                  </p>
-
-                  <div className="scan-controls">
-                    <div className="mode-toggle">
-                      <button
-                        className={scanMode === "cloud" ? "mode-btn active" : "mode-btn"}
-                        onClick={() => setScanMode("cloud")}
-                      >
-                        Cloud mode
-                      </button>
-                      <button
-                        className={scanMode === "local" ? "mode-btn active" : "mode-btn"}
-                        onClick={() => setScanMode("local")}
-                      >
-                        Local mode
-                      </button>
-                    </div>
-
-                    {scanMode === "local" && (
-                      <label className="scan-field">
-                        <span>Path to manifest.json</span>
-                        <input
-                          value={manifestPath}
-                          onChange={(e) => setManifestPath(e.target.value)}
-                          placeholder="target/manifest.json"
-                        />
-                      </label>
-                    )}
-
-                    {scanMode === "cloud" && (
-                      <p className="scan-hint">
-                        {cloudConfigured ? (
-                          <>
-                            Scans environment <strong>{config.dbt_cloud.environment_id}</strong> in account{" "}
-                            <strong>{config.dbt_cloud.account_id}</strong>.
-                          </>
-                        ) : (
-                          <>
-                            <span className="warn-inline">⚠ dbt Cloud not configured.</span>{" "}
-                            Open <button className="inline-link" onClick={() => setShowSettings(true)}>Settings</button>{" "}
-                            to enter your Account ID and Environment ID.
-                          </>
-                        )}
-                      </p>
-                    )}
-
-                    <label className="scan-ai-toggle">
-                      <input
-                        type="checkbox"
-                        checked={withAiScan}
-                        onChange={(e) => setWithAiScan(e.target.checked)}
-                      />
-                      <span>
-                        Enable AI review{" "}
-                        <span className="scan-hint-inline">
-                          (requires API key for selected provider)
-                        </span>
-                      </span>
-                    </label>
-
-                    <button
-                      className="primary-button scan-run-btn"
-                      onClick={runScan}
-                      disabled={isScanning || !isDownloadReady || (scanMode === "cloud" && !cloudConfigured)}
-                    >
-                      {isScanning ? <span className="scan-spinner">Scanning…</span> : "Run Scan →"}
-                    </button>
-                  </div>
-
-                  {scanError && (
-                    <div className="scan-error">
-                      <strong>Scan failed</strong>
-                      <pre>{scanError}</pre>
-                    </div>
-                  )}
-
-                  {scanResult && (
-                    <div className="scan-results">
-                      <div className="scan-score-row">
-                        <div className={`scan-score ${scoreClass(scanResult.summary.score)}`}>
-                          <span className="score-num">{scanResult.summary.score}</span>
-                          <span className="score-denom">/100</span>
-                          <span className="score-label">{scoreLabel(scanResult.summary.score)}</span>
-                        </div>
-                        <div className="scan-meta">
-                          <div className="scan-counts">
-                            <span className="count-badge sev-error">{scanResult.summary.errors} errors</span>
-                            <span className="count-badge sev-warning">{scanResult.summary.warnings} warnings</span>
-                            <span className="count-badge sev-info">{scanResult.summary.info} info</span>
-                          </div>
-                          <p className="scan-meta-line">
-                            {scanResult.summary.models_scanned} models · {scanResult.summary.rules_evaluated} rules ·{" "}
-                            {new Date(scanResult.timestamp).toLocaleTimeString()}
-                          </p>
-                        </div>
-                      </div>
-
-                      {scanResult.violations.some((v) => v.rule_id === "reuse.model_similarity_clusters") && (
-                        <div className="cluster-summary-banner">
-                          <strong>
-                            {
-                              scanResult.violations.filter((v) => v.rule_id === "reuse.model_similarity_clusters").length
-                            }{" "}
-                            reuse cluster
-                            {scanResult.violations.filter((v) => v.rule_id === "reuse.model_similarity_clusters").length === 1 ? "" : "s"}{" "}
-                            found
-                          </strong>
-                          <p>
-                            Start with the cluster cards below. They tell you when several models should share one intermediate,
-                            which is usually the fastest way to cut migration redundancy.
-                          </p>
-                        </div>
-                      )}
-
-                      {scanResult.reuse_report && scanResult.reuse_report.total_recommendations > 0 && (
-                        <div className="reuse-queue">
-                          <div className="reuse-queue-header">
-                            <div>
-                              <p className="panel-kicker">Reuse Action Queue</p>
-                              <h3>Work the highest-value consolidation opportunities first</h3>
-                            </div>
-                            <div className="reuse-queue-metrics">
-                              <span className="score-chip score-neutral">
-                                {scanResult.reuse_report.cluster_count} cluster
-                                {scanResult.reuse_report.cluster_count === 1 ? "" : "s"}
-                              </span>
-                              <span className="score-chip score-neutral">
-                                {scanResult.reuse_report.remaining_pair_count} remaining pair
-                                {scanResult.reuse_report.remaining_pair_count === 1 ? "" : "s"}
-                              </span>
-                            </div>
-                          </div>
-
-                          <div className="reuse-queue-list">
-                            {scanResult.reuse_report.prioritized_actions.map((action, idx) => (
-                              <div key={`${action.recommendation_type}-${idx}`} className="reuse-queue-card">
-                                <div className="reuse-queue-top">
-                                  <span className={`score-chip ${priorityTone(action.priority)}`}>
-                                    {action.priority} priority
-                                  </span>
-                                  <span className={`score-chip ${confidenceTone(action.confidence_band)}`}>
-                                    {action.confidence_band} confidence
-                                  </span>
-                                  <span className="score-chip score-neutral">
-                                    {action.recommendation_type === "cluster" ? "cluster" : "pair"}
-                                  </span>
-                                  {action.recommendation_type === "cluster" &&
-                                    typeof action.cluster_average_score === "number" && (
-                                      <span className="score-chip score-neutral">
-                                        avg {action.cluster_average_score.toFixed(2)}
-                                      </span>
-                                    )}
-                                  {action.recommendation_type === "pair" &&
-                                    typeof action.similarity_score === "number" && (
-                                      <span className="score-chip score-neutral">
-                                        score {action.similarity_score.toFixed(2)}
-                                      </span>
-                                    )}
-                                </div>
-                                <p className="reuse-queue-summary">{action.summary}</p>
-                                {!!action.model_names.length && (
-                                  <div className="cluster-model-list">
-                                    {action.model_names.map((model) => (
-                                      <span key={model} className="score-chip score-neutral">
-                                        {model}
-                                      </span>
-                                    ))}
-                                  </div>
-                                )}
-                                <div className="similarity-grid">
-                                  {!!action.shared_inputs?.length && (
-                                    <div>
-                                      <span>Shared inputs</span>
-                                      <p>{action.shared_inputs.join(", ")}</p>
-                                    </div>
-                                  )}
-                                  {!!action.shared_selected_columns?.length && (
-                                    <div>
-                                      <span>Shared columns</span>
-                                      <p>{action.shared_selected_columns.join(", ")}</p>
-                                    </div>
-                                  )}
-                                  {!!action.shared_aggregates?.length && (
-                                    <div>
-                                      <span>Shared aggregates</span>
-                                      <p>{action.shared_aggregates.join(", ")}</p>
-                                    </div>
-                                  )}
-                                  {!!action.shared_filters?.length && (
-                                    <div>
-                                      <span>Shared filters</span>
-                                      <p>{action.shared_filters.join(", ")}</p>
-                                    </div>
-                                  )}
-                                </div>
-                                {!!action.example_pairs?.length && (
-                                  <div className="cluster-examples">
-                                    <span>Why this cluster ranks highly</span>
-                                    <p>
-                                      {action.example_pairs
-                                        .map((pair) => {
-                                          const left = String(pair.left_model_name ?? "");
-                                          const right = String(pair.right_model_name ?? "");
-                                          const score = Number(pair.similarity_score ?? 0);
-                                          return `${left} ↔ ${right} (${score.toFixed(2)})`;
-                                        })
-                                        .join(" · ")}
-                                    </p>
-                                  </div>
-                                )}
-                                {action.suggested_shared_model && (
-                                  <p className="similarity-suggested">
-                                    Suggested shared model: <code>{action.suggested_shared_model}</code>
-                                  </p>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      {scanResult.violations.length === 0 ? (
-                        <div className="scan-clean">All rules passed — no violations found.</div>
-                      ) : (
-                        <div className="violations-list">
-                          {scanResult.violations.map((v, i) => (
-                            <div key={i} className={`violation-row vrow-${v.severity}`}>
-                              <div className="violation-top">
-                                <span className={`sev-badge sev-${v.severity}`}>{v.severity}</span>
-                                <code className="violation-rule">{v.rule_id}</code>
-                                <span className="violation-model">{v.model_name}</span>
-                              </div>
-                              <p className="violation-msg">{v.message}</p>
-                              {v.rule_id === "reuse.model_similarity_clusters" && v.details && (
-                                <div className="similarity-card cluster-card">
-                                  <div className="similarity-header">
-                                    <span className={`score-chip ${confidenceTone(v.details.confidence_band)}`}>
-                                      {v.details.confidence_band ?? "unknown"} confidence
-                                    </span>
-                                    {typeof v.details.cluster_average_score === "number" && (
-                                      <span className="score-chip score-neutral">
-                                        avg similarity {v.details.cluster_average_score.toFixed(2)}
-                                      </span>
-                                    )}
-                                    {typeof v.details.cluster_peak_score === "number" && (
-                                      <span className="score-chip score-neutral">
-                                        peak {v.details.cluster_peak_score.toFixed(2)}
-                                      </span>
-                                    )}
-                                  </div>
-                                  <p className="similarity-pair">
-                                    Cluster:{" "}
-                                    <strong>{v.details.cluster_models?.join(", ") ?? v.model_name}</strong>
-                                  </p>
-                                  {!!v.details.cluster_models?.length && (
-                                    <div className="cluster-model-list">
-                                      {v.details.cluster_models.map((model) => (
-                                        <span key={model} className="score-chip score-neutral">
-                                          {model}
-                                        </span>
-                                      ))}
-                                    </div>
-                                  )}
-                                  <div className="similarity-grid">
-                                    {!!v.details.shared_inputs?.length && (
-                                      <div>
-                                        <span>Shared inputs</span>
-                                        <p>{v.details.shared_inputs.join(", ")}</p>
-                                      </div>
-                                    )}
-                                    {!!v.details.shared_selected_columns?.length && (
-                                      <div>
-                                        <span>Shared columns</span>
-                                        <p>{v.details.shared_selected_columns.join(", ")}</p>
-                                      </div>
-                                    )}
-                                    {!!v.details.shared_aggregates?.length && (
-                                      <div>
-                                        <span>Shared aggregates</span>
-                                        <p>{v.details.shared_aggregates.join(", ")}</p>
-                                      </div>
-                                    )}
-                                    {!!v.details.shared_filters?.length && (
-                                      <div>
-                                        <span>Shared filters</span>
-                                        <p>{v.details.shared_filters.join(", ")}</p>
-                                      </div>
-                                    )}
-                                  </div>
-                                  {!!v.details.cluster_example_pairs?.length && (
-                                    <div className="cluster-examples">
-                                      <span>Strongest pair links</span>
-                                      <p>
-                                        {v.details.cluster_example_pairs
-                                          .map(
-                                            (pair) =>
-                                              `${pair.left_model_name} ↔ ${pair.right_model_name} (${pair.similarity_score.toFixed(2)})`
-                                          )
-                                          .join(" · ")}
-                                      </p>
-                                    </div>
-                                  )}
-                                  {v.details.suggested_shared_model && (
-                                    <p className="similarity-suggested">
-                                      Suggested shared model: <code>{v.details.suggested_shared_model}</code>
-                                    </p>
-                                  )}
-                                </div>
-                              )}
-                              {v.rule_id === "reuse.model_similarity_candidates" && v.details && (
-                                <div className="similarity-card">
-                                  <div className="similarity-header">
-                                    <span className={`score-chip ${confidenceTone(v.details.confidence_band)}`}>
-                                      {v.details.confidence_band ?? "unknown"} confidence
-                                    </span>
-                                    {typeof v.details.similarity_score === "number" && (
-                                      <span className="score-chip score-neutral">
-                                        similarity {v.details.similarity_score.toFixed(2)}
-                                      </span>
-                                    )}
-                                  </div>
-                                  <p className="similarity-pair">
-                                    Pair: <strong>{v.model_name}</strong> and{" "}
-                                    <strong>{v.details.paired_model_name ?? "another model"}</strong>
-                                  </p>
-                                  <div className="similarity-grid">
-                                    {!!v.details.shared_inputs?.length && (
-                                      <div>
-                                        <span>Shared inputs</span>
-                                        <p>{v.details.shared_inputs.join(", ")}</p>
-                                      </div>
-                                    )}
-                                    {!!v.details.shared_selected_columns?.length && (
-                                      <div>
-                                        <span>Shared columns</span>
-                                        <p>{v.details.shared_selected_columns.join(", ")}</p>
-                                      </div>
-                                    )}
-                                    {!!v.details.shared_aggregates?.length && (
-                                      <div>
-                                        <span>Shared aggregates</span>
-                                        <p>{v.details.shared_aggregates.join(", ")}</p>
-                                      </div>
-                                    )}
-                                    {!!v.details.shared_filters?.length && (
-                                      <div>
-                                        <span>Shared filters</span>
-                                        <p>{v.details.shared_filters.join(", ")}</p>
-                                      </div>
-                                    )}
-                                  </div>
-                                  {v.details.suggested_shared_model && (
-                                    <p className="similarity-suggested">
-                                      Suggested shared model: <code>{v.details.suggested_shared_model}</code>
-                                    </p>
-                                  )}
-                                </div>
-                              )}
-                              {v.suggestion && <p className="violation-suggestion">→ {v.suggestion}</p>}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* All projects scan */}
-              {scanScope === "all" && (
-                <div className="all-projects-pane">
-                  <div className="all-projects-header">
-                    <p className="run-intro">
-                      Scan every environment in account{" "}
-                      <strong>{config.dbt_cloud.account_id > 0 ? config.dbt_cloud.account_id : "—"}</strong>.
-                      The scanner runs sequentially and produces a governance score for each project,
-                      letting you see your entire dbt Cloud account's health in one pass.
-                    </p>
-                    {!cloudConfigured && (
+                {/* Cloud: project → environment selection */}
+                {scanMode === "cloud" && (
+                  <>
+                    {!cloudConfigured ? (
                       <div className="scan-hint warn-card">
                         <strong>Account not configured.</strong>{" "}
                         <button className="inline-link" onClick={() => setShowSettings(true)}>
@@ -1301,152 +1613,509 @@ export default function Home() {
                         </button>{" "}
                         to enter your dbt Cloud account ID and API token.
                       </div>
-                    )}
-                  </div>
-
-                  {/* Preview of what the output looks like */}
-                  <div className="projects-table-wrap">
-                    <p className="panel-kicker">Example output — governance scores across all environments</p>
-                    <table className="projects-table">
-                      <thead>
-                        <tr>
-                          <th>Environment</th>
-                          <th>Project</th>
-                          <th>Models</th>
-                          <th>Score</th>
-                          <th>Errors</th>
-                          <th>Warnings</th>
-                          <th>Migration debt</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {[
-                          { env: "Production", project: "acme_core", models: 147, score: 84, errors: 3, warnings: 12, migration: 0 },
-                          { env: "Production", project: "legacy_finance", models: 89, score: 41, errors: 18, warnings: 31, migration: 14 },
-                          { env: "Production", project: "marketing_attribution", models: 62, score: 67, errors: 7, warnings: 19, migration: 3 },
-                          { env: "Staging", project: "acme_core", models: 147, score: 82, errors: 4, warnings: 13, migration: 0 }
-                        ].map((row, i) => (
-                          <tr key={i}>
-                            <td><span className="env-badge">{row.env}</span></td>
-                            <td><code className="proj-name">{row.project}</code></td>
-                            <td>{row.models}</td>
-                            <td>
-                              <span className={`score-pill ${row.score >= 75 ? "score-good" : row.score >= 60 ? "score-warn" : "score-fail"}`}>
-                                {row.score}
-                              </span>
-                            </td>
-                            <td className="cell-error">{row.errors}</td>
-                            <td className="cell-warn">{row.warnings}</td>
-                            <td className={row.migration > 0 ? "cell-migration" : "cell-clean"}>
-                              {row.migration > 0 ? `${row.migration} issues` : "Clean"}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                    <p className="table-note">
-                      The <em>legacy_finance</em> project shows 14 migration issues — models carried over from a
-                      Talend migration with hardcoded schemas and no ref() calls. This view makes that prioritization
-                      obvious at a glance.
-                    </p>
-                  </div>
-
-                  <div className="run-divider"><span>Terminal command</span></div>
-
-                  <div className="run-step">
-                    <div className="run-step-num">→</div>
-                    <div className="run-step-body">
-                      <strong>Scan all environments in your account</strong>
-                      <p>
-                        Pass{" "}
-                        <code className="inline-code">--all-projects</code> to iterate every environment in your
-                        dbt Cloud account and produce a combined report. Output includes per-project scores and a
-                        consolidated violations list filterable by migration category.
-                      </p>
-                      <div className="cmd-block">
-                        <code>
-                          {`dbt-governance scan --cloud --all-projects --account-id ${config.dbt_cloud.account_id || "YOUR_ACCOUNT_ID"} --output json --output-file all-projects.json`}
-                        </code>
-                        <button
-                          className="cmd-copy"
-                          onClick={() =>
-                            copyCommand(
-                              `dbt-governance scan --cloud --all-projects --account-id ${config.dbt_cloud.account_id || "YOUR_ACCOUNT_ID"} --output json --output-file all-projects.json`,
-                              "all-projects"
-                            )
-                          }
-                        >
-                          {copiedCommand === "all-projects" ? "Copied!" : "Copy"}
+                    ) : cloudEnvFetch === "loading" ? (
+                      <p className="env-picker-hint">Loading environments…</p>
+                    ) : cloudEnvFetch !== "done" ? (
+                      <div className="env-picker-fetch-row">
+                        <button className="ghost-button" onClick={fetchCloudEnvironments}>
+                          Load environments from dbt Cloud
                         </button>
+                        {cloudEnvFetch === "error" && (
+                          <span className="env-picker-error">{cloudEnvError}</span>
+                        )}
                       </div>
-                      <p className="cmd-hint">
-                        Requires <code className="inline-code">DBT_CLOUD_API_TOKEN</code> with account-level
-                        read permissions. The scanner fetches the environment list from the Admin API, then runs
-                        one scan per environment.
-                      </p>
-                    </div>
-                  </div>
+                    ) : (
+                      <>
+                        {/* Step 1: Choose a project */}
+                        <div className="scan-step">
+                          <div className="scan-step-header">
+                            <span className="scan-step-num">1</span>
+                            <span className="scan-step-title">Choose a project</span>
+                          </div>
+                          <div className="project-picker">
+                            {uniqueProjects.map(p => (
+                              <button
+                                key={p.id}
+                                className={`project-card${selectedProjectId === p.id ? " project-card-active" : ""}`}
+                                onClick={() => {
+                                  setSelectedProjectId(p.id);
+                                  const projEnvs = cloudEnvs.filter(e => e.project_id === p.id);
+                                  const prodIds = new Set(projEnvs.filter(e => isProdEnv(e.name)).map(e => e.id));
+                                  setSelectedEnvIds(prodIds.size > 0 ? prodIds : new Set(projEnvs.map(e => e.id)));
+                                }}
+                              >
+                                {p.name}
+                                <span className="project-card-count">
+                                  {cloudEnvs.filter(e => e.project_id === p.id).length} env{cloudEnvs.filter(e => e.project_id === p.id).length !== 1 ? "s" : ""}
+                                </span>
+                              </button>
+                            ))}
+                            {uniqueProjects.length > 1 && (
+                              <button
+                                className={`project-card project-card-all${!selectedProjectId ? " project-card-active" : ""}`}
+                                onClick={() => {
+                                  setSelectedProjectId(null);
+                                  const allProdIds = new Set(cloudEnvs.filter(e => isProdEnv(e.name)).map(e => e.id));
+                                  setSelectedEnvIds(allProdIds.size > 0 ? allProdIds : new Set(cloudEnvs.map(e => e.id)));
+                                }}
+                              >
+                                All projects
+                                <span className="project-card-count">{cloudEnvs.length} envs</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Step 2: Choose environments */}
+                        <div className="scan-step">
+                          <div className="scan-step-header">
+                            <span className="scan-step-num">2</span>
+                            <span className="scan-step-title">
+                              {selectedProjectId
+                                ? `Environments in ${selectedProjectName}`
+                                : "Choose environments"}
+                            </span>
+                            <div className="env-filter-row">
+                              <button className="env-filter-btn" onClick={selectProdEnvs}>★ Prod only</button>
+                              <button className="env-filter-btn" onClick={selectAllEnvs}>All</button>
+                              <button className="env-filter-btn" onClick={clearEnvs}>None</button>
+                            </div>
+                          </div>
+                          <div className="env-checklist">
+                            {filteredEnvs.map(env => {
+                              const isProd = isProdEnv(env.name);
+                              const isDev = env.type === "development";
+                              return (
+                                <label
+                                  key={env.id}
+                                  className={`env-check-row${isProd ? " env-is-prod" : ""}${selectedEnvIds.has(env.id) ? " env-checked" : ""}`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedEnvIds.has(env.id)}
+                                    onChange={(e) => toggleEnv(env.id, e.target.checked)}
+                                  />
+                                  <span className="env-check-body">
+                                    <span className="env-check-name">{env.name}</span>
+                                    {!selectedProjectId && (
+                                      <span className="env-check-project">{env.project_name}</span>
+                                    )}
+                                  </span>
+                                  {isProd && <span className="env-badge-prod">prod</span>}
+                                  <span className={`env-badge-type${isDev ? " env-badge-dev" : ""}`}>
+                                    {env.type}
+                                  </span>
+                                  <span className="env-check-id">#{env.id}</span>
+                                </label>
+                              );
+                            })}
+                          </div>
+                          <div className="env-multiselect-footer">
+                            <span className="env-count">
+                              {selectedEnvIds.size} of {filteredEnvs.length} environment{filteredEnvs.length !== 1 ? "s" : ""} selected
+                            </span>
+                            <button className="ghost-button small" onClick={fetchCloudEnvironments}>↻ Refresh</button>
+                          </div>
+                          {/* Warn if any selected env is a development environment */}
+                          {Array.from(selectedEnvIds).some(id => {
+                            const env = cloudEnvs.find(e => e.id === id);
+                            return env?.type === "development";
+                          }) && (
+                            <div className="env-dev-warning">
+                              <strong>⚠ Development environment selected</strong>
+                              <p>
+                                The dbt Cloud Discovery API only covers <strong>deployment</strong> environments
+                                with at least one successful job run. Scanning a development environment will
+                                fail with "No data available". Select a deployment environment instead.
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </>
+                )}
+
+                {/* Local mode: manifest path + project dir */}
+                {scanMode === "local" && (
+                  <>
+                    <label className="scan-field">
+                      <span>Path to manifest.json</span>
+                      <input
+                        value={manifestPath}
+                        onChange={(e) => setManifestPath(e.target.value)}
+                        placeholder="target/manifest.json"
+                      />
+                    </label>
+                    <label className="scan-field">
+                      <span>dbt project directory <span className="scan-field-hint">(optional — needed if manifest was built with dbt Fusion/Cloud CLI)</span></span>
+                      <input
+                        value={projectDir}
+                        onChange={(e) => setProjectDir(e.target.value)}
+                        placeholder="e.g. demo-project"
+                      />
+                    </label>
+                  </>
+                )}
+
+                <label className="scan-ai-toggle">
+                  <input
+                    type="checkbox"
+                    checked={withAiScan}
+                    onChange={(e) => setWithAiScan(e.target.checked)}
+                  />
+                  <span>
+                    Enable AI review{" "}
+                    <span className="scan-hint-inline">(requires API key for selected provider)</span>
+                  </span>
+                </label>
+
+                <button
+                  className="primary-button scan-run-btn"
+                  onClick={runScan}
+                  disabled={isScanning || !isDownloadReady || (scanMode === "cloud" && !cloudConfigured)}
+                >
+                  {isScanning ? (
+                    <span className="scan-spinner">Scanning…</span>
+                  ) : scanMode === "cloud" && cloudEnvFetch === "done" && selectedEnvIds.size > 0 ? (
+                    `Scan ${selectedEnvIds.size} environment${selectedEnvIds.size !== 1 ? "s" : ""}${selectedProjectId ? ` in ${selectedProjectName}` : " across all projects"} →`
+                  ) : (
+                    "Run Scan →"
+                  )}
+                </button>
+              </div>
+
+              {scanError && (
+                <div className="scan-error">
+                  <strong>Scan failed</strong>
+                  <pre>{scanError}</pre>
                 </div>
               )}
 
-              {/* Terminal instructions — shared for single project */}
-              {scanScope === "single" && (
-                <>
-                  <div className="run-divider"><span>Or run from the terminal</span></div>
+              {scanResult && (
+                <div className="scan-results">
+                  <div className="scan-score-row">
+                    <div className={`scan-score ${scoreClass(scanResult.summary.score)}`}>
+                      <span className="score-num">{scanResult.summary.score}</span>
+                      <span className="score-denom">/100</span>
+                      <span className="score-label">{scoreLabel(scanResult.summary.score)}</span>
+                    </div>
+                    <div className="scan-meta">
+                      <div className="scan-counts">
+                        <span className="count-badge sev-error">{scanResult.summary.errors} errors</span>
+                        <span className="count-badge sev-warning">{scanResult.summary.warnings} warnings</span>
+                        <span className="count-badge sev-info">{scanResult.summary.info} info</span>
+                      </div>
+                      <p className="scan-meta-line">
+                        {scanResult.summary.models_scanned} models · {scanResult.summary.rules_evaluated} rules ·{" "}
+                        {new Date(scanResult.timestamp).toLocaleTimeString()}
+                      </p>
+                    </div>
+                  </div>
 
-                  <div className="run-steps">
-                    <div className="run-step">
-                      <div className="run-step-num">1</div>
-                      <div className="run-step-body">
-                        <strong>Install the scanner</strong>
-                        <p>Requires Python 3.11+.</p>
-                        <div className="cmd-block">
-                          <code>pip install dbt-governance</code>
-                          <button className="cmd-copy" onClick={() => copyCommand("pip install dbt-governance", "install")}>
-                            {copiedCommand === "install" ? "Copied!" : "Copy"}
-                          </button>
+                  {scanResult.violations.some((v) => v.rule_id === "reuse.model_similarity_clusters") && (
+                    <div className="cluster-summary-banner">
+                      <strong>
+                        {scanResult.violations.filter((v) => v.rule_id === "reuse.model_similarity_clusters").length}{" "}
+                        reuse cluster
+                        {scanResult.violations.filter((v) => v.rule_id === "reuse.model_similarity_clusters").length === 1 ? "" : "s"}{" "}
+                        found
+                      </strong>
+                      <p>
+                        Start with the cluster cards below. They tell you when several models should share one intermediate,
+                        which is usually the fastest way to cut migration redundancy.
+                      </p>
+                    </div>
+                  )}
+
+                  {scanResult.reuse_report && scanResult.reuse_report.total_recommendations > 0 && (
+                    <div className="reuse-queue">
+                      <div className="reuse-queue-header">
+                        <div>
+                          <p className="panel-kicker">Reuse Action Queue</p>
+                          <h3>Work the highest-value consolidation opportunities first</h3>
+                        </div>
+                        <div className="reuse-queue-metrics">
+                          <span className="score-chip score-neutral">
+                            {scanResult.reuse_report.cluster_count} cluster
+                            {scanResult.reuse_report.cluster_count === 1 ? "" : "s"}
+                          </span>
+                          <span className="score-chip score-neutral">
+                            {scanResult.reuse_report.remaining_pair_count} remaining pair
+                            {scanResult.reuse_report.remaining_pair_count === 1 ? "" : "s"}
+                          </span>
                         </div>
                       </div>
-                    </div>
 
-                    <div className="run-step">
-                      <div className="run-step-num">2</div>
-                      <div className="run-step-body">
-                        <strong>Download and commit your config files</strong>
-                        <p>Use the download bar below to get all three files, then commit them to your dbt project root.</p>
-                        <div className="file-list">
-                          <span className="file-badge">.dbt-governance.yml</span>
-                          <span className="file-badge">REVIEW.md</span>
-                          <span className="file-badge">CLAUDE.md</span>
-                        </div>
+                      <div className="reuse-queue-list">
+                        {scanResult.reuse_report.prioritized_actions.map((action, idx) => (
+                          <div key={`${action.recommendation_type}-${idx}`} className="reuse-queue-card">
+                            <div className="reuse-queue-top">
+                              <span className={`score-chip ${priorityTone(action.priority)}`}>
+                                {action.priority} priority
+                              </span>
+                              <span className={`score-chip ${confidenceTone(action.confidence_band)}`}>
+                                {action.confidence_band} confidence
+                              </span>
+                              <span className="score-chip score-neutral">
+                                {action.recommendation_type === "cluster" ? "cluster" : "pair"}
+                              </span>
+                              {action.recommendation_type === "cluster" &&
+                                typeof action.cluster_average_score === "number" && (
+                                  <span className="score-chip score-neutral">
+                                    avg {action.cluster_average_score.toFixed(2)}
+                                  </span>
+                                )}
+                              {action.recommendation_type === "pair" &&
+                                typeof action.similarity_score === "number" && (
+                                  <span className="score-chip score-neutral">
+                                    score {action.similarity_score.toFixed(2)}
+                                  </span>
+                                )}
+                            </div>
+                            <p className="reuse-queue-summary">{action.summary}</p>
+                            {!!action.model_names.length && (
+                              <div className="cluster-model-list">
+                                {action.model_names.map((model) => (
+                                  <span key={model} className="score-chip score-neutral">{model}</span>
+                                ))}
+                              </div>
+                            )}
+                            <div className="similarity-grid">
+                              {!!action.shared_inputs?.length && (
+                                <div><span>Shared inputs</span><p>{action.shared_inputs.join(", ")}</p></div>
+                              )}
+                              {!!action.shared_selected_columns?.length && (
+                                <div><span>Shared columns</span><p>{action.shared_selected_columns.join(", ")}</p></div>
+                              )}
+                              {!!action.shared_aggregates?.length && (
+                                <div><span>Shared aggregates</span><p>{action.shared_aggregates.join(", ")}</p></div>
+                              )}
+                              {!!action.shared_filters?.length && (
+                                <div><span>Shared filters</span><p>{action.shared_filters.join(", ")}</p></div>
+                              )}
+                            </div>
+                            {!!action.example_pairs?.length && (
+                              <div className="cluster-examples">
+                                <span>Why this cluster ranks highly</span>
+                                <p>
+                                  {action.example_pairs
+                                    .map((pair) => {
+                                      const left = String(pair.left_model_name ?? "");
+                                      const right = String(pair.right_model_name ?? "");
+                                      const score = Number(pair.similarity_score ?? 0);
+                                      return `${left} ↔ ${right} (${score.toFixed(2)})`;
+                                    })
+                                    .join(" · ")}
+                                </p>
+                              </div>
+                            )}
+                            {action.suggested_shared_model && (
+                              <p className="similarity-suggested">
+                                Suggested shared model: <code>{action.suggested_shared_model}</code>
+                              </p>
+                            )}
+                          </div>
+                        ))}
                       </div>
                     </div>
+                  )}
 
-                    <div className="run-step">
-                      <div className="run-step-num">3</div>
-                      <div className="run-step-body">
-                        <strong>Set your API tokens</strong>
-                        <p>
-                          Create a <code className="inline-code">.env</code> file or set CI secrets.
-                          Generate a dbt Cloud service token with <strong>Metadata Only</strong> permissions at{" "}
-                          <span className="mono-hint">cloud.getdbt.com → Settings → Service Tokens</span>.
-                        </p>
-                        <div className="cmd-block">
-                          <code>{`DBT_CLOUD_API_TOKEN=your_service_token_here\n# AI review (optional, matches your provider in Settings)\nANTHROPIC_API_KEY=your_key_here`}</code>
-                          <button
-                            className="cmd-copy"
-                            onClick={() => copyCommand("DBT_CLOUD_API_TOKEN=your_service_token_here\nANTHROPIC_API_KEY=your_key_here", "env")}
-                          >
-                            {copiedCommand === "env" ? "Copied!" : "Copy"}
-                          </button>
+                  {scanResult.violations.length === 0 ? (
+                    <div className="scan-clean">All rules passed — no violations found.</div>
+                  ) : (
+                    <div className="violations-list">
+                      {scanResult.violations.map((v, i) => (
+                        <div key={i} className={`violation-row vrow-${v.severity}`}>
+                          <div className="violation-top">
+                            <span className={`sev-badge sev-${v.severity}`}>{v.severity}</span>
+                            <code className="violation-rule">{v.rule_id}</code>
+                            <span className="violation-model">{v.model_name}</span>
+                          </div>
+                          <p className="violation-msg">{v.message}</p>
+                          {v.rule_id === "reuse.model_similarity_clusters" && v.details && (
+                            <div className="similarity-card cluster-card">
+                              <div className="similarity-header">
+                                <span className={`score-chip ${confidenceTone(v.details.confidence_band)}`}>
+                                  {v.details.confidence_band ?? "unknown"} confidence
+                                </span>
+                                {typeof v.details.cluster_average_score === "number" && (
+                                  <span className="score-chip score-neutral">
+                                    avg similarity {v.details.cluster_average_score.toFixed(2)}
+                                  </span>
+                                )}
+                                {typeof v.details.cluster_peak_score === "number" && (
+                                  <span className="score-chip score-neutral">
+                                    peak {v.details.cluster_peak_score.toFixed(2)}
+                                  </span>
+                                )}
+                              </div>
+                              <p className="similarity-pair">
+                                Cluster:{" "}
+                                <strong>{v.details.cluster_models?.join(", ") ?? v.model_name}</strong>
+                              </p>
+                              {!!v.details.cluster_models?.length && (
+                                <div className="cluster-model-list">
+                                  {v.details.cluster_models.map((model) => (
+                                    <span key={model} className="score-chip score-neutral">{model}</span>
+                                  ))}
+                                </div>
+                              )}
+                              <div className="similarity-grid">
+                                {!!v.details.shared_inputs?.length && (
+                                  <div><span>Shared inputs</span><p>{v.details.shared_inputs.join(", ")}</p></div>
+                                )}
+                                {!!v.details.shared_selected_columns?.length && (
+                                  <div><span>Shared columns</span><p>{v.details.shared_selected_columns.join(", ")}</p></div>
+                                )}
+                                {!!v.details.shared_aggregates?.length && (
+                                  <div><span>Shared aggregates</span><p>{v.details.shared_aggregates.join(", ")}</p></div>
+                                )}
+                                {!!v.details.shared_filters?.length && (
+                                  <div><span>Shared filters</span><p>{v.details.shared_filters.join(", ")}</p></div>
+                                )}
+                              </div>
+                              {!!v.details.cluster_example_pairs?.length && (
+                                <div className="cluster-examples">
+                                  <span>Strongest pair links</span>
+                                  <p>
+                                    {v.details.cluster_example_pairs
+                                      .map(
+                                        (pair) =>
+                                          `${pair.left_model_name} ↔ ${pair.right_model_name} (${pair.similarity_score.toFixed(2)})`
+                                      )
+                                      .join(" · ")}
+                                  </p>
+                                </div>
+                              )}
+                              {v.details.suggested_shared_model && (
+                                <p className="similarity-suggested">
+                                  Suggested shared model: <code>{v.details.suggested_shared_model}</code>
+                                </p>
+                              )}
+                            </div>
+                          )}
+                          {v.rule_id === "reuse.model_similarity_candidates" && v.details && (
+                            <div className="similarity-card">
+                              <div className="similarity-header">
+                                <span className={`score-chip ${confidenceTone(v.details.confidence_band)}`}>
+                                  {v.details.confidence_band ?? "unknown"} confidence
+                                </span>
+                                {typeof v.details.similarity_score === "number" && (
+                                  <span className="score-chip score-neutral">
+                                    similarity {v.details.similarity_score.toFixed(2)}
+                                  </span>
+                                )}
+                              </div>
+                              <p className="similarity-pair">
+                                Pair: <strong>{v.model_name}</strong> and{" "}
+                                <strong>{v.details.paired_model_name ?? "another model"}</strong>
+                              </p>
+                              <div className="similarity-grid">
+                                {!!v.details.shared_inputs?.length && (
+                                  <div><span>Shared inputs</span><p>{v.details.shared_inputs.join(", ")}</p></div>
+                                )}
+                                {!!v.details.shared_selected_columns?.length && (
+                                  <div><span>Shared columns</span><p>{v.details.shared_selected_columns.join(", ")}</p></div>
+                                )}
+                                {!!v.details.shared_aggregates?.length && (
+                                  <div><span>Shared aggregates</span><p>{v.details.shared_aggregates.join(", ")}</p></div>
+                                )}
+                                {!!v.details.shared_filters?.length && (
+                                  <div><span>Shared filters</span><p>{v.details.shared_filters.join(", ")}</p></div>
+                                )}
+                              </div>
+                              {v.details.suggested_shared_model && (
+                                <p className="similarity-suggested">
+                                  Suggested shared model: <code>{v.details.suggested_shared_model}</code>
+                                </p>
+                              )}
+                            </div>
+                          )}
+                          {v.suggestion && <p className="violation-suggestion">→ {v.suggestion}</p>}
                         </div>
-                      </div>
+                      ))}
                     </div>
+                  )}
+                </div>
+              )}
 
-                    <div className="run-step">
-                      <div className="run-step-num">4</div>
-                      <div className="run-step-body">
-                        <strong>Run the scan</strong>
+              <div className="run-divider"><span>Or run from the terminal</span></div>
+
+              <div className="run-steps">
+                <div className="run-step">
+                  <div className="run-step-num">1</div>
+                  <div className="run-step-body">
+                    <strong>Install the scanner</strong>
+                    <p>Requires Python 3.11+.</p>
+                    <div className="cmd-block">
+                      <code>pip install dbt-governance</code>
+                      <button className="cmd-copy" onClick={() => copyCommand("pip install dbt-governance", "install")}>
+                        {copiedCommand === "install" ? "Copied!" : "Copy"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="run-step">
+                  <div className="run-step-num">2</div>
+                  <div className="run-step-body">
+                    <strong>Download and commit your config files</strong>
+                    <p>Use the download bar below to get all three files, then commit them to your dbt project root.</p>
+                    <div className="file-list">
+                      <span className="file-badge">.dbt-governance.yml</span>
+                      <span className="file-badge">REVIEW.md</span>
+                      <span className="file-badge">{aiMdName}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="run-step">
+                  <div className="run-step-num">3</div>
+                  <div className="run-step-body">
+                    <strong>Set your API tokens</strong>
+                    <p>
+                      Create a <code className="inline-code">.env</code> file or set CI secrets.
+                      Generate a dbt Cloud service token with <strong>Metadata Only</strong> permissions at{" "}
+                      <span className="mono-hint">cloud.getdbt.com → Settings → Service Tokens</span>.
+                    </p>
+                    <div className="cmd-block">
+                      <code>{`DBT_CLOUD_API_TOKEN=your_service_token_here\n# AI review (optional, matches your provider in Settings)\nANTHROPIC_API_KEY=your_key_here`}</code>
+                      <button
+                        className="cmd-copy"
+                        onClick={() => copyCommand("DBT_CLOUD_API_TOKEN=your_service_token_here\nANTHROPIC_API_KEY=your_key_here", "env")}
+                      >
+                        {copiedCommand === "env" ? "Copied!" : "Copy"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="run-step">
+                  <div className="run-step-num">4</div>
+                  <div className="run-step-body">
+                    <strong>Run the scan</strong>
+                    {scanMode === "cloud" && cloudEnvFetch === "done" && selectedEnvIds.size > 0 ? (
+                      <>
+                        <p>One command per selected environment:</p>
+                        {Array.from(selectedEnvIds).map((id) => {
+                          const env = cloudEnvs.find(e => e.id === id);
+                          const cmd = `dbt-governance scan --cloud --environment-id ${id}`;
+                          return (
+                            <div key={id} className="cmd-block" style={{ marginBottom: 6 }}>
+                              <span className="cmd-env-label">
+                                {env?.name ?? `env ${id}`}{isProdEnv(env?.name ?? "") ? " ★" : ""}
+                              </span>
+                              <code>{cmd}</code>
+                              <button className="cmd-copy" onClick={() => copyCommand(cmd, `env-${id}`)}>
+                                {copiedCommand === `env-${id}` ? "Copied!" : "Copy"}
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </>
+                    ) : (
+                      <>
                         <div className="cmd-block">
                           <code>dbt-governance scan --cloud --config .dbt-governance.yml</code>
                           <button className="cmd-copy" onClick={() => copyCommand("dbt-governance scan --cloud --config .dbt-governance.yml", "scan")}>
@@ -1460,16 +2129,18 @@ export default function Home() {
                           </button>
                         </div>
                         <p className="cmd-hint">Cloud mode (top) queries the dbt Cloud API. Local mode (bottom) reads a manifest.json from disk.</p>
-                      </div>
-                    </div>
+                      </>
+                    )}
+                  </div>
+                </div>
 
-                    <div className="run-step">
-                      <div className="run-step-num">5</div>
-                      <div className="run-step-body">
-                        <strong>Add to GitHub Actions</strong>
-                        <p>Runs on every PR touching a model or YAML file. No dbt installation needed.</p>
-                        <div className="cmd-block multiline">
-                          <code>{`name: dbt Governance
+                <div className="run-step">
+                  <div className="run-step-num">5</div>
+                  <div className="run-step-body">
+                    <strong>Add to GitHub Actions</strong>
+                    <p>Runs on every PR touching a model or YAML file. No dbt installation needed.</p>
+                    <div className="cmd-block multiline">
+                      <code>{`name: dbt Governance
 on:
   pull_request:
     paths: ['models/**', 'macros/**', '*.yml']
@@ -1486,23 +2157,21 @@ jobs:
         run: dbt-governance scan --cloud --config .dbt-governance.yml
         env:
           DBT_CLOUD_API_TOKEN: \${{ secrets.DBT_CLOUD_API_TOKEN }}`}</code>
-                          <button
-                            className="cmd-copy top"
-                            onClick={() =>
-                              copyCommand(
-                                "name: dbt Governance\non:\n  pull_request:\n    paths: ['models/**', 'macros/**', '*.yml']\n\njobs:\n  governance:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-python@v5\n        with: { python-version: '3.11' }\n      - run: pip install dbt-governance\n      - name: Scan\n        run: dbt-governance scan --cloud --config .dbt-governance.yml\n        env:\n          DBT_CLOUD_API_TOKEN: ${{ secrets.DBT_CLOUD_API_TOKEN }}",
-                                "gha"
-                              )
-                            }
-                          >
-                            {copiedCommand === "gha" ? "Copied!" : "Copy"}
-                          </button>
-                        </div>
-                      </div>
+                      <button
+                        className="cmd-copy top"
+                        onClick={() =>
+                          copyCommand(
+                            "name: dbt Governance\non:\n  pull_request:\n    paths: ['models/**', 'macros/**', '*.yml']\n\njobs:\n  governance:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-python@v5\n        with: { python-version: '3.11' }\n      - run: pip install dbt-governance\n      - name: Scan\n        run: dbt-governance scan --cloud --config .dbt-governance.yml\n        env:\n          DBT_CLOUD_API_TOKEN: ${{ secrets.DBT_CLOUD_API_TOKEN }}",
+                            "gha"
+                          )
+                        }
+                      >
+                        {copiedCommand === "gha" ? "Copied!" : "Copy"}
+                      </button>
                     </div>
                   </div>
-                </>
-              )}
+                </div>
+              </div>
             </div>
           )}
         </div>
@@ -1574,12 +2243,6 @@ jobs:
                   <p>Hardcoded schemas break cross-environment portability and are the most common style violation after a migration.</p>
                 </>
               )}
-              {activeTab === "migration" && (
-                <>
-                  <strong>Migration debt scanner</strong>
-                  <p>Run these against your production environment to produce a Legacy Migration Report. Every violation comes with an exact fix. Hand it to a team and they have a sprint's worth of clearly-scoped work.</p>
-                </>
-              )}
               {activeTab === "reuse" && (
                 <>
                   <strong>Find the redundancy</strong>
@@ -1597,7 +2260,7 @@ jobs:
                   <strong>Run a live scan</strong>
                   <p>
                     {cloudConfigured
-                      ? `Your dbt Cloud connection is configured (env ${config.dbt_cloud.environment_id}). Hit Run Scan to see live violations.`
+                      ? `Your dbt Cloud connection is configured (account ${config.dbt_cloud.account_id}${config.dbt_cloud.environment_id > 0 ? `, env ${config.dbt_cloud.environment_id}` : " — all environments"}). Hit Run Scan to see live violations.`
                       : "Open Settings to configure your dbt Cloud connection, then run a live scan to see your current governance score."}
                   </p>
                 </>
@@ -1615,6 +2278,23 @@ jobs:
               <span className="dl-status ready">
                 <span className="dl-dot" />
                 {enabledRuleCount} rules configured — ready to download
+                <span className="info-icon-wrap">
+                  <span className="info-icon">i</span>
+                  <div className="info-tooltip">
+                    <strong>Three files are generated:</strong>
+                    <ul>
+                      <li>
+                        <strong>.dbt-governance.yml</strong> — the machine-readable ruleset. The governance scanner reads this file to know which rules are active, their severity levels, and any per-rule configuration. Commit it to your repo root so every developer and CI job enforces the same standards.
+                      </li>
+                      <li>
+                        <strong>REVIEW.md</strong> — a checklist for <em>human</em> code reviewers only (not read by AI). It summarises every enabled rule in plain English so reviewers know exactly what to look for during pull request review, without having to read the YAML.
+                      </li>
+                      <li>
+                        <strong>{aiMdName}</strong> — instructions for your AI coding assistant. Read automatically by Claude Code (CLAUDE.md) or Gemini CLI (GEMINI.md) on every PR, so generated code respects your conventions before a human reviewer sees it.
+                      </li>
+                    </ul>
+                  </div>
+                </span>
               </span>
             ) : (
               <span className="dl-status warn">Enter a project name to enable downloads</span>
@@ -1627,8 +2307,8 @@ jobs:
             <button className="primary-button secondary" disabled={!isDownloadReady} onClick={() => downloadFile("REVIEW.md", reviewPreview)}>
               Download REVIEW.md
             </button>
-            <button className="primary-button secondary" disabled={!isDownloadReady} onClick={() => downloadFile("CLAUDE.md", claudePreview)}>
-              Download CLAUDE.md
+            <button className="primary-button secondary" disabled={!isDownloadReady} onClick={() => downloadFile(aiMdName, aiMdPreview)}>
+              Download {aiMdName}
             </button>
             {scanResult && (
               <button
@@ -1641,6 +2321,383 @@ jobs:
           </div>
         </div>
       </div>
+
+      {/* ─────────────────── Naming info popover (fixed, escapes overflow) ─────────────────── */}
+      {namingInfoOpen && namingInfoPos && (
+        <div
+          ref={namingPopoverRef}
+          className="naming-info-popover"
+          style={{ top: namingInfoPos.top, left: namingInfoPos.left }}
+          onWheel={(e) => e.stopPropagation()}
+        >
+          <div className="info-tooltip-header">
+            <strong>How naming rules are enforced</strong>
+            <button
+              className="info-tooltip-close"
+              onClick={() => setNamingInfoOpen(false)}
+              aria-label="Close"
+            >✕</button>
+          </div>
+          <div className="info-tooltip-body">
+            <p style={{ marginBottom: 10 }}>
+              <strong style={{ display: "inline" }}>Error vs Warning:</strong> when the scanner runs, every violation is printed to the output. Whether it <em>fails the CI check</em> (exits with code 1, blocking the PR) depends on the severity you set here and the <code>fail_on</code> setting in your config (default: <code>error</code>). With the default, <strong>errors block the PR</strong>; warnings are reported but the check still passes.
+            </p>
+            <p style={{ marginBottom: 10 }}>
+              The scanner identifies a model&apos;s layer by its <strong>folder</strong> first (<code>models/staging/</code>, <code>models/intermediate/</code>, <code>models/marts/</code>), then falls back to its <strong>name prefix</strong>. Only models in the matching layer are checked by each rule.
+            </p>
+            <ul>
+              <li>
+                <strong>Staging prefix</strong><br />
+                Pattern: <code>stg_&lt;source&gt;__&lt;entity&gt;</code> (note: <strong>double underscore</strong>)<br />
+                ✓ <code>stg_stripe__payments.sql</code><br />
+                ✓ <code>stg_salesforce__accounts.sql</code><br />
+                ✗ <code>stripe_payments.sql</code> — no <code>stg_</code> prefix<br />
+                ✗ <code>stg_payments.sql</code> — missing source name and double underscore
+              </li>
+              <li>
+                <strong>Intermediate prefix</strong><br />
+                Pattern: <code>int_&lt;entity&gt;_&lt;verb&gt;</code> — scanner enforces <code>int_</code> prefix only; the <code>&lt;entity&gt;_&lt;verb&gt;</code> part is a team convention, not a regex check.<br />
+                ✓ <code>int_orders_pivoted.sql</code><br />
+                ✓ <code>int_customers_ranked.sql</code><br />
+                ✗ <code>orders_pivoted.sql</code> — no <code>int_</code> prefix
+              </li>
+              <li>
+                <strong>Mart prefix</strong><br />
+                Pattern: must start with <code>fct_</code> (fact table) or <code>dim_</code> (dimension).<br />
+                ✓ <code>fct_orders.sql</code>, <code>dim_customers.sql</code><br />
+                ✗ <code>orders.sql</code>, <code>customer_report.sql</code>
+              </li>
+              <li>
+                <strong>Sources require explicit schema</strong><br />
+                Every entry in <code>sources.yml</code> must have a <code>schema:</code> field. Without it, dbt falls back to the default schema, which silently breaks across environments.<br />
+                ✓ <code>schema: raw_stripe</code><br />
+                ✗ No <code>schema:</code> key at all
+              </li>
+              <li>
+                <strong>SQL filename matches model name</strong><br />
+                The filename (without <code>.sql</code>) must match the model name in <code>manifest.json</code>. A mismatch usually means the model was renamed in <code>dbt_project.yml</code> but the file was not.<br />
+                ✓ File <code>stg_stripe__payments.sql</code>, model name <code>stg_stripe__payments</code><br />
+                ✗ File <code>stg_payments.sql</code>, model name <code>stg_stripe__payments</code>
+              </li>
+            </ul>
+          </div>
+        </div>
+      )}
+
+      {/* ─────────────────── Structure info popover ─────────────────── */}
+      {structureInfoOpen && structureInfoPos && (
+        <div
+          ref={structurePopoverRef}
+          className="naming-info-popover"
+          style={{ top: structureInfoPos.top, left: structureInfoPos.left }}
+          onWheel={(e) => e.stopPropagation()}
+        >
+          <div className="info-tooltip-header">
+            <strong>What structure rules check</strong>
+            <button className="info-tooltip-close" onClick={() => setStructureInfoOpen(false)} aria-label="Close">✕</button>
+          </div>
+          <div className="info-tooltip-body">
+            <p style={{ marginBottom: 10 }}>
+              <strong style={{ display: "inline" }}>Background — the three layers:</strong> a well-run dbt project moves data through three stages. <strong>Staging</strong> models clean up raw source data (one model per source table, no business logic). <strong>Intermediate</strong> models join and transform staging data. <strong>Marts</strong> are the final outputs — the tables and views your dashboards and analysts actually query. Structure rules enforce that data always flows <em>in that order</em> and never skips steps or doubles back.
+            </p>
+            <p style={{ marginBottom: 10 }}>
+              <strong style={{ display: "inline" }}>Error vs Warning:</strong> errors cause the CI scan to exit with a failure code and block the PR. Warnings are printed in the report but the check still passes (unless <code>fail_on</code> is set to <code>warning</code> in your config).
+            </p>
+            <ul>
+              <li>
+                <strong>Staging models only reference sources</strong> <em>(Error by default)</em><br />
+                A staging model should pull data directly from a raw source table — nothing else. If it references another dbt model, business logic is leaking into the wrong layer.<br />
+                ✓ <code>stg_stripe__payments</code> uses <code>source(&apos;stripe&apos;, &apos;payments&apos;)</code><br />
+                ✗ <code>stg_stripe__payments</code> uses <code>ref(&apos;some_other_model&apos;)</code>
+              </li>
+              <li>
+                <strong>Mart models never reference sources directly</strong> <em>(Error by default)</em><br />
+                A mart should never reach back to raw source data — it should always go through staging and intermediate models. Raw sources are unvalidated; marts are supposed to be trustworthy outputs.<br />
+                ✓ <code>fct_orders</code> references <code>ref(&apos;int_orders_enriched&apos;)</code><br />
+                ✗ <code>fct_orders</code> references <code>source(&apos;stripe&apos;, &apos;charges&apos;)</code>
+              </li>
+              <li>
+                <strong>Models should not skip layers</strong> <em>(Warning by default)</em><br />
+                A mart model jumping straight to a staging model — skipping intermediate — means transformation logic ends up in the wrong place and is hard to reuse.<br />
+                ✓ <code>fct_orders</code> → <code>int_orders_pivoted</code> → <code>stg_stripe__payments</code><br />
+                ✗ <code>fct_orders</code> → <code>stg_stripe__payments</code> (skipped intermediate)
+              </li>
+              <li>
+                <strong>Limit DAG depth</strong> <em>(Warning by default, configurable)</em><br />
+                Counts how many upstream ancestors a model has. A very long chain (default limit: 8) makes it hard to trace where data came from and slows down full refreshes.<br />
+                ✗ A model that is 11 hops away from its source tables
+              </li>
+              <li>
+                <strong>Limit downstream fanout</strong> <em>(Warning by default, configurable)</em><br />
+                Counts how many other models directly depend on a given model. If one model feeds 15 others (default limit: 10), a change to it is high-risk and hard to test.<br />
+                ✗ <code>int_customers_core</code> is referenced directly by 14 downstream models
+              </li>
+              <li>
+                <strong>Flag orphan models</strong> <em>(Info by default)</em><br />
+                A model with no downstream consumers and no registered exposure is likely unused dead code — it still runs on every job, costing compute time.<br />
+                ✗ <code>old_revenue_calc</code> — nothing references it and it has no exposure
+              </li>
+              <li>
+                <strong>Detect diamond (rejoin) patterns</strong> <em>(Warning by default)</em><br />
+                A diamond happens when two different models both trace back to the same common ancestor, then rejoin further downstream. This can cause row duplication that is very hard to spot.<br />
+                ✗ <code>fct_revenue</code> joins <code>int_orders_by_region</code> and <code>int_orders_by_product</code>, which both come from <code>stg_stripe__orders</code>
+              </li>
+              <li>
+                <strong>Model directories match layers</strong> <em>(Error by default)</em><br />
+                The file&apos;s folder should match its name prefix. A file named <code>stg_*</code> should live under <code>models/staging/</code>. Mismatches confuse the layer detection used by all other rules.<br />
+                ✓ <code>models/staging/stg_stripe__payments.sql</code><br />
+                ✗ <code>models/marts/stg_stripe__payments.sql</code>
+              </li>
+            </ul>
+          </div>
+        </div>
+      )}
+
+      {/* ─────────────────── Testing info popover ─────────────────── */}
+      {testingInfoOpen && testingInfoPos && (
+        <div
+          ref={testingPopoverRef}
+          className="naming-info-popover"
+          style={{ top: testingInfoPos.top, left: testingInfoPos.left }}
+          onWheel={(e) => e.stopPropagation()}
+        >
+          <div className="info-tooltip-header">
+            <strong>What testing rules check</strong>
+            <button className="info-tooltip-close" onClick={() => setTestingInfoOpen(false)} aria-label="Close">✕</button>
+          </div>
+          <div className="info-tooltip-body">
+            <p style={{ marginBottom: 10 }}>
+              <strong style={{ display: "inline" }}>Background — what is a dbt test?</strong> A test is an automated data quality check defined in a YAML file alongside your models. After your models build, dbt runs these checks against the actual data — things like "this column has no duplicates" or "this column is never empty." If a test fails, the job fails. These rules ensure your team writes enough of them.
+            </p>
+            <p style={{ marginBottom: 10 }}>
+              <strong style={{ display: "inline" }}>Error vs Warning:</strong> errors cause the CI scan to exit with a failure code and block the PR. Warnings are reported but do not block the PR by default.
+            </p>
+            <ul>
+              <li>
+                <strong>Primary keys require unique + not_null tests</strong> <em>(Error by default)</em><br />
+                Every model should have one column that uniquely identifies each row (the primary key). This rule requires two tests on that column: <code>unique</code> (no duplicates) and <code>not_null</code> (no missing values). Without these, duplicate or missing rows can silently corrupt downstream reports.<br />
+                ✓ Schema YAML has <code>- unique</code> and <code>- not_null</code> on the <code>order_id</code> column<br />
+                ✗ Model has no tests at all, or only one of the two
+              </li>
+              <li>
+                <strong>Minimum tests per model</strong> <em>(Warning by default, configurable)</em><br />
+                Sets a floor on the total number of tests a model must have (default: 2). The primary key tests alone satisfy this for most models — the rule is a backstop to prevent models with zero tests from slipping through.<br />
+                ✓ Model has 3 tests defined in its schema YAML<br />
+                ✗ Model has 0 or 1 test (below the minimum you configure)
+              </li>
+              <li>
+                <strong>Sources feeding staging require freshness checks</strong> <em>(Warning by default)</em><br />
+                A freshness check tells dbt to verify that source data was loaded recently. Without it, your pipeline could be running on data that is hours or days old, and nobody would know. This rule flags any source table that feeds a staging model but has no freshness configuration.<br />
+                ✓ Source definition includes <code>loaded_at_field: _ingested_at</code> and a freshness warning threshold<br />
+                ✗ Source has no <code>loaded_at_field</code> and no freshness block
+              </li>
+              <li>
+                <strong>Mart models should define contracts</strong> <em>(Info by default)</em><br />
+                A dbt contract locks down the column names and data types a mart model is allowed to output. If a developer accidentally drops or renames a column, dbt refuses to build the model — protecting dashboards and downstream consumers from silent breaking changes.<br />
+                ✓ Model config includes <code>contract: &#123;enforced: true&#125;</code> with all columns typed in the schema YAML<br />
+                ✗ Mart model has no contract — column changes go undetected until a dashboard breaks
+              </li>
+              <li>
+                <strong>Disabled tests are flagged</strong> <em>(Warning by default)</em><br />
+                Tests can be silenced by setting <code>enabled: false</code> in the model config. This rule flags any model where that has happened, so disabled tests don&apos;t quietly accumulate as unaddressed technical debt.<br />
+                ✗ A model has <code>config: &#123;enabled: false&#125;</code> — all its tests are being skipped
+              </li>
+            </ul>
+          </div>
+        </div>
+      )}
+
+      {/* ─────────────────── Documentation info popover ─────────────────── */}
+      {documentationInfoOpen && documentationInfoPos && (
+        <div
+          ref={documentationPopoverRef}
+          className="naming-info-popover"
+          style={{ top: documentationInfoPos.top, left: documentationInfoPos.left }}
+          onWheel={(e) => e.stopPropagation()}
+        >
+          <div className="info-tooltip-header">
+            <strong>What documentation rules check</strong>
+            <button className="info-tooltip-close" onClick={() => setDocumentationInfoOpen(false)} aria-label="Close">✕</button>
+          </div>
+          <div className="info-tooltip-body">
+            <p style={{ marginBottom: 10 }}>
+              <strong style={{ display: "inline" }}>Background:</strong> in dbt, documentation lives in YAML files alongside your SQL. A <code>schema.yml</code> file lets you describe what a model does, what each column means, and where source data comes from. Without these descriptions, the only way to understand the warehouse is to read raw SQL — which is not realistic for analysts, stakeholders, or new team members. These rules enforce a minimum documentation floor.
+            </p>
+            <p style={{ marginBottom: 10 }}>
+              <strong style={{ display: "inline" }}>Error vs Warning:</strong> errors block the PR when the CI scan runs. Warnings are reported but do not block by default.
+            </p>
+            <ul>
+              <li>
+                <strong>Models require descriptions in key layers</strong> <em>(Error by default)</em><br />
+                Intermediate and mart models (configurable) must have a written description in their schema YAML. Staging models are often excluded because they map 1-to-1 with source tables and the source description is sufficient.<br />
+                ✓ <code>fct_orders</code> has <code>description: "One row per order, grain is order_id"</code> in its YAML<br />
+                ✗ <code>fct_orders</code> has no <code>description:</code> field at all
+              </li>
+              <li>
+                <strong>Mart columns require descriptions</strong> <em>(Warning by default)</em><br />
+                Every column listed in a mart&apos;s schema YAML must have a description. Marts are the models analysts query directly — undocumented columns lead to misinterpretation and duplicate calculation logic across teams.<br />
+                ✓ Column <code>gross_revenue</code> has <code>description: "Order total before discounts and refunds, in USD"</code><br />
+                ✗ Column <code>gross_revenue</code> is listed in the YAML but has no description
+              </li>
+              <li>
+                <strong>Sources require descriptions</strong> <em>(Warning by default)</em><br />
+                Every source table defined in <code>sources.yml</code> should have a description explaining what system it comes from and what the data represents. Without this, developers have no way to evaluate whether a source is the right one to use.<br />
+                ✓ Source <code>stripe.charges</code> has <code>description: "Raw payment events from the Stripe API, loaded hourly"</code><br />
+                ✗ Source <code>stripe.charges</code> has no description
+              </li>
+              <li>
+                <strong>Schema YAML exists per model directory</strong> <em>(Error by default)</em><br />
+                Every folder containing SQL models must have at least one schema YAML file in it. A folder with no YAML means none of those models have tests, descriptions, or column definitions — they are completely invisible to governance.<br />
+                ✓ <code>models/marts/finance/</code> contains <code>_finance__models.yml</code><br />
+                ✗ <code>models/marts/finance/</code> has SQL files but no <code>.yml</code> file
+              </li>
+            </ul>
+          </div>
+        </div>
+      )}
+
+      {/* ─────────────────── Materialization info popover ─────────────────── */}
+      {materializationInfoOpen && materializationInfoPos && (
+        <div
+          ref={materializationPopoverRef}
+          className="naming-info-popover"
+          style={{ top: materializationInfoPos.top, left: materializationInfoPos.left }}
+          onWheel={(e) => e.stopPropagation()}
+        >
+          <div className="info-tooltip-header">
+            <strong>What materialization rules check</strong>
+            <button className="info-tooltip-close" onClick={() => setMaterializationInfoOpen(false)} aria-label="Close">✕</button>
+          </div>
+          <div className="info-tooltip-body">
+            <p style={{ marginBottom: 10 }}>
+              <strong style={{ display: "inline" }}>Background — what is a materialization?</strong> When dbt runs, it has to decide how to physically store each model in the database. A <strong>view</strong> stores only the query definition and recomputes on every read — fast to create, always fresh, no storage cost. A <strong>table</strong> physically writes all the rows to disk — slower to build but fast to query. An <strong>incremental</strong> model only processes new or changed rows on each run, which is essential for large datasets. These rules enforce sensible defaults for each layer so performance choices don&apos;t become governance problems.
+            </p>
+            <p style={{ marginBottom: 10 }}>
+              <strong style={{ display: "inline" }}>Error vs Warning:</strong> errors block the PR. Warnings are reported but do not block by default.
+            </p>
+            <ul>
+              <li>
+                <strong>Staging models should be views</strong> <em>(Warning by default)</em><br />
+                Staging models are just light cleanups of raw source tables. Materializing them as tables wastes storage and compute — you would be writing a full copy of raw data on every job run. Views are the right choice because they stay in sync automatically and cost nothing to store.<br />
+                ✓ <code>stg_stripe__payments</code> is materialized as <code>view</code> (set in <code>dbt_project.yml</code> or model config)<br />
+                ✗ <code>stg_stripe__payments</code> is materialized as <code>table</code> — full copy rebuilt on every run
+              </li>
+              <li>
+                <strong>Incremental models require a unique_key</strong> <em>(Error by default)</em><br />
+                An incremental model appends or merges new rows instead of rebuilding from scratch. Without a <code>unique_key</code>, dbt has no way to match incoming rows to existing ones — it will silently create duplicates every time the job runs.<br />
+                ✓ <code>{`{{ config(materialized='incremental', unique_key='event_id') }}`}</code><br />
+                ✗ <code>{`{{ config(materialized='incremental') }}`}</code> — no <code>unique_key</code>, duplicates on every run
+              </li>
+              <li>
+                <strong>Incremental models should define on_schema_change</strong> <em>(Warning by default)</em><br />
+                When a developer adds a new column to an incremental model, dbt needs to know what to do with the existing table that doesn&apos;t have that column yet. Without this setting, dbt&apos;s default behaviour silently ignores the new column — it simply doesn&apos;t appear in the table until a full refresh is forced.<br />
+                ✓ <code>{`{{ config(on_schema_change='append_new_columns') }}`}</code> — new columns are added automatically<br />
+                ✗ No <code>on_schema_change</code> — new columns silently dropped until someone notices the data is wrong
+              </li>
+            </ul>
+          </div>
+        </div>
+      )}
+
+      {/* ─────────────────── SQL Style info popover ─────────────────── */}
+      {styleInfoOpen && styleInfoPos && (
+        <div
+          ref={stylePopoverRef}
+          className="naming-info-popover"
+          style={{ top: styleInfoPos.top, left: styleInfoPos.left }}
+          onWheel={(e) => e.stopPropagation()}
+        >
+          <div className="info-tooltip-header">
+            <strong>What SQL style rules check</strong>
+            <button className="info-tooltip-close" onClick={() => setStyleInfoOpen(false)} aria-label="Close">✕</button>
+          </div>
+          <div className="info-tooltip-body">
+            <p style={{ marginBottom: 10 }}>
+              <strong style={{ display: "inline" }}>Background:</strong> dbt models are SQL files with a specific structure. These rules enforce patterns that make dbt SQL consistent, readable, and safe across environments — things a generic SQL linter would never catch because they are dbt-specific. The central idea is the <strong>import CTE pattern</strong>: all references to other models (<code>ref()</code>) or sources (<code>source()</code>) are declared at the top of the file as named CTEs, so the transformation logic below can read like plain English.
+            </p>
+            <p style={{ marginBottom: 10 }}>
+              <strong style={{ display: "inline" }}>Error vs Warning:</strong> errors block the PR. Warnings are reported but do not block by default.
+            </p>
+            <ul>
+              <li>
+                <strong>Prefer import-then-logical CTE structure</strong> <em>(Warning by default)</em><br />
+                All <code>ref()</code> and <code>source()</code> calls should be in CTEs at the top of the file ("import CTEs"), followed by CTEs containing transformation logic. Mixing them makes it hard to see at a glance what data a model depends on.<br />
+                ✓ <code>with orders as (select * from {`{{ ref('stg_stripe__orders') }}`}),</code> then later <code>final as (select ... from orders ...)</code><br />
+                ✗ A logical CTE appears first, then a <code>ref()</code> CTE appears after it
+              </li>
+              <li>
+                <strong>No hardcoded schema or database references</strong> <em>(Error by default)</em><br />
+                Writing <code>FROM prod.finance.orders</code> directly in SQL means the model only works in one environment. In dev or CI, that schema doesn&apos;t exist, so the model fails. All table references must go through <code>{`ref()`}</code> or <code>{`source()`}</code> so dbt can resolve the correct database and schema for each environment automatically.<br />
+                ✓ <code>FROM {`{{ ref('stg_stripe__orders') }}`}</code><br />
+                ✗ <code>FROM prod.raw_stripe.orders</code> — hardcoded, breaks in dev and CI
+              </li>
+              <li>
+                <strong>No SELECT * in marts</strong> <em>(Warning by default)</em><br />
+                Mart models are the final outputs consumed by dashboards and analysts. Using <code>SELECT *</code> means the column list is invisible in the SQL file and will silently change if an upstream model adds or removes columns — breaking dashboards without any warning.<br />
+                ✓ <code>SELECT order_id, customer_id, gross_revenue, created_at</code><br />
+                ✗ <code>SELECT *</code> in the final SELECT of a mart model
+              </li>
+              <li>
+                <strong>Final SELECT should come from a named CTE</strong> <em>(Warning by default)</em><br />
+                The last statement in the file — the one that actually writes data — should reference a CTE by name, not call <code>ref()</code> or <code>source()</code> directly. This keeps the "what does this model output" question separated from the "where does data come from" question.<br />
+                ✓ Last line: <code>SELECT * FROM final</code> (where <code>final</code> is a CTE defined above)<br />
+                ✗ Last line: <code>SELECT * FROM {`{{ ref('int_orders_enriched') }}`}</code> — no CTE wrapper
+              </li>
+              <li>
+                <strong>Place ref() calls in import CTEs, not inline joins</strong> <em>(Warning by default)</em><br />
+                Writing <code>JOIN {`{{ ref('dim_customers') }}`}</code> directly inside the SQL body buries the dependency in the middle of transformation logic, making it hard to see the full list of inputs at a glance and hard to diff in code review.<br />
+                ✓ <code>customers as (select * from {`{{ ref('dim_customers') }}`})</code> at the top, then <code>JOIN customers</code> below<br />
+                ✗ <code>JOIN {`{{ ref('dim_customers') }}`} ON ...</code> inline in the body
+              </li>
+            </ul>
+          </div>
+        </div>
+      )}
+
+      {/* ─────────────────── Artifacts info popover ─────────────────── */}
+      {artifactsInfoOpen && artifactsInfoPos && (
+        <div
+          ref={artifactsPopoverRef}
+          className="naming-info-popover"
+          style={{ top: artifactsInfoPos.top, left: artifactsInfoPos.left }}
+          onWheel={(e) => e.stopPropagation()}
+        >
+          <div className="info-tooltip-header">
+            <strong>What is the Generated Artifacts section?</strong>
+            <button className="info-tooltip-close" onClick={() => setArtifactsInfoOpen(false)} aria-label="Close">✕</button>
+          </div>
+          <div className="info-tooltip-body">
+            <p style={{ marginBottom: 10 }}>
+              This is where your work from the rule configuration tabs gets turned into real files. Everything you toggled on the left — which rules are enabled, their severity levels, any custom thresholds — is reflected here as a live preview. <strong>Nothing is saved or applied until you download and commit these files to your dbt repository.</strong>
+            </p>
+            <p style={{ marginBottom: 10 }}>
+              <strong style={{ display: "inline" }}>What to do in this section:</strong>
+            </p>
+            <ol style={{ margin: "0 0 10px 0", paddingLeft: 16 }}>
+              <li style={{ marginBottom: 6 }}><strong>Preview each file</strong> using the three buttons at the top right (<code>.dbt-governance.yml</code>, <code>REVIEW.md</code>, <code>CLAUDE.md</code>) to see exactly what will be generated before you download anything.</li>
+              <li style={{ marginBottom: 6 }}><strong>Download all three files</strong> using the buttons at the top of this panel or the bar at the bottom of the page.</li>
+              <li style={{ marginBottom: 6 }}><strong>Commit all three files to the root of your dbt repository</strong> — the same folder that contains your <code>dbt_project.yml</code>. That single commit is the entire setup.</li>
+            </ol>
+            <p style={{ marginBottom: 10 }}>
+              <strong style={{ display: "inline" }}>What each file does once committed:</strong>
+            </p>
+            <ul>
+              <li style={{ marginBottom: 8 }}>
+                <strong>.dbt-governance.yml</strong> — the machine-readable ruleset. The <code>dbt-governance scan</code> command reads this file to know which rules to enforce, at what severity, and with what thresholds. Your CI pipeline runs this command on every pull request and blocks the merge if errors are found.
+              </li>
+              <li style={{ marginBottom: 8 }}>
+                <strong>REVIEW.md</strong> — a checklist for <em>human</em> code reviewers. It lists every enabled rule in plain English so reviewers can quickly check whether a PR meets your standards without needing to understand YAML or run any commands.
+              </li>
+              <li style={{ marginBottom: 8 }}>
+                <strong>CLAUDE.md</strong> — instructions for AI coding assistants (Claude, Copilot, Cursor, and others). When an AI helps a developer write or modify a dbt model, it reads this file first so the code it generates already follows your naming conventions, structure rules, and SQL style — before a human even reviews it.
+              </li>
+            </ul>
+            <p style={{ marginBottom: 0, opacity: 0.75, fontSize: "0.7rem" }}>
+              Tip: if you change your mind about any rules later, just come back, adjust the toggles, and re-download. The files are always regenerated fresh from your current settings.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* ─────────────────── Settings Drawer ─────────────────── */}
       {showSettings && (
@@ -1660,7 +2717,6 @@ jobs:
             {/* ── Configuration Checklist ── */}
             {(() => {
               const hasAccountId = config.dbt_cloud.account_id > 0;
-              const hasEnvId = config.dbt_cloud.environment_id > 0;
               const hasToken = envVars.DBT_CLOUD_API_TOKEN === true;
               const aiProvider = config.ai_provider.provider;
               const aiEnvKey = aiProvider === "claude" ? "ANTHROPIC_API_KEY" : aiProvider === "openai" ? "OPENAI_API_KEY" : aiProvider === "gemini" ? "GEMINI_API_KEY" : null;
@@ -1668,7 +2724,6 @@ jobs:
               const items = [
                 { ok: config.dbt_cloud.enabled, label: "dbt Cloud mode enabled" },
                 { ok: hasAccountId, label: "Account ID", hint: "Enter in dbt Cloud Connection below" },
-                { ok: hasEnvId, label: "Environment ID", hint: "Enter in dbt Cloud Connection below" },
                 { ok: hasToken, label: "DBT_CLOUD_API_TOKEN", hint: "Set in .env file or shell environment" },
                 ...(aiProvider !== "none" ? [{ ok: hasAiKey, label: aiEnvKey!, hint: "Set in .env file or shell environment" }] : []),
               ];
@@ -1728,25 +2783,56 @@ jobs:
                   </span>
                   <input
                     type="number"
-                    placeholder="e.g. 257364"
+                    placeholder="e.g. 123456"
                     className={!config.dbt_cloud.account_id ? "field-empty" : ""}
                     value={config.dbt_cloud.account_id || ""}
                     onChange={(e) => updateConfig((next) => { next.dbt_cloud.account_id = Number(e.target.value); })}
                   />
                 </label>
-                <label>
-                  <span>
-                    Environment ID
-                    {!config.dbt_cloud.environment_id && <span className="field-tag field-tag-missing">Required</span>}
+
+                {/* Environment picker — replaces raw ID input */}
+                <div className="env-picker">
+                  <span className="env-picker-label">
+                    Environment
+                    <span className="field-tag field-tag-optional">Optional</span>
                   </span>
-                  <input
-                    type="number"
-                    placeholder="e.g. 432623"
-                    className={!config.dbt_cloud.environment_id ? "field-empty" : ""}
-                    value={config.dbt_cloud.environment_id || ""}
-                    onChange={(e) => updateConfig((next) => { next.dbt_cloud.environment_id = Number(e.target.value); })}
-                  />
-                </label>
+                  {!config.dbt_cloud.account_id || !envVars.DBT_CLOUD_API_TOKEN ? (
+                    <p className="env-picker-hint">Enter Account ID and set DBT_CLOUD_API_TOKEN to fetch environments</p>
+                  ) : cloudEnvFetch === "done" ? (
+                    <>
+                      <div className="env-picker-select-row">
+                        <select
+                          value={config.dbt_cloud.environment_id || 0}
+                          onChange={(e) => updateConfig((next) => { next.dbt_cloud.environment_id = Number(e.target.value); })}
+                        >
+                          <option value={0}>⚠ Scan all environments</option>
+                          {cloudEnvs.map((env) => (
+                            <option key={env.id} value={env.id}>
+                              {env.project_name} · {env.name}{isProdEnv(env.name) ? " ★" : ""} ({env.type}, #{env.id})
+                            </option>
+                          ))}
+                        </select>
+                        <button className="ghost-button small" onClick={fetchCloudEnvironments}>↻</button>
+                      </div>
+                      {config.dbt_cloud.environment_id === 0 && (
+                        <p className="env-all-warning">
+                          ⚠ Scanning all environments queries every environment in your account. This may take several minutes and consume significant Discovery API quota. Select a specific environment for regular scans.
+                        </p>
+                      )}
+                    </>
+                  ) : cloudEnvFetch === "loading" ? (
+                    <p className="env-picker-hint">Fetching environments…</p>
+                  ) : (
+                    <div className="env-picker-fetch-row">
+                      <button className="ghost-button small" onClick={fetchCloudEnvironments}>
+                        Fetch environments
+                      </button>
+                      {cloudEnvFetch === "error" && (
+                        <span className="env-picker-error">{cloudEnvError}</span>
+                      )}
+                    </div>
+                  )}
+                </div>
                 <label className="span-2">
                   <span>API base URL</span>
                   <input
@@ -1901,6 +2987,80 @@ jobs:
                 );
               })()}
             </div>
+
+            {/* ── AI Review Prompt ── */}
+            {config.ai_provider.provider !== "none" && (
+              <div className="drawer-section">
+                <div className="drawer-section-header">
+                  <span className="drawer-section-icon">✦</span>
+                  <strong>AI Review Prompt</strong>
+                </div>
+                <p className="drawer-hint" style={{ marginBottom: 10 }}>
+                  This is the system prompt sent to the AI on every model review. Add your own rules below — they are appended verbatim after the default instructions and exported in your <code className="inline-code">.dbt-governance.yml</code>.
+                </p>
+
+                {/* Default prompt — read-only, collapsible */}
+                <details className="prompt-preview-details">
+                  <summary className="prompt-preview-summary">View default system prompt</summary>
+                  <pre className="prompt-preview-body">{`You are an expert dbt analytics engineer performing code review on dbt SQL models.
+Your job is to identify governance violations — patterns that indicate poor practices,
+maintenance risks, or architectural problems in dbt projects.
+
+Respond ONLY with valid JSON in this exact format (no markdown, no prose):
+{
+  "violations": [
+    {
+      "rule_id": "<ai.rule_name>",
+      "severity": "<error|warning|info>",
+      "message": "<specific, actionable description of the problem>",
+      "suggestion": "<concrete fix recommendation>"
+    }
+  ]
+}
+
+If no violations are found, return: {"violations": []}
+
+Available rule IDs (use the best match, or ai.general for anything else):
+- ai.business_logic_in_staging   — staging model applies business filters, joins, or
+                                    aggregations that belong in an intermediate or mart model
+- ai.complex_model_should_split  — model is doing too many things and should be broken
+                                    into smaller intermediate steps
+- ai.misleading_description      — the model or column description does not accurately
+                                    reflect what the SQL actually computes
+- ai.hardcoded_values            — magic numbers, hardcoded dates, status strings, or
+                                    environment-specific schema names embedded in SQL
+- ai.poor_cte_structure          — CTEs are poorly named, redundant, or structured in a
+                                    way that hides logic
+- ai.missing_column_context      — a column performs a complex calculation but has no
+                                    description to explain its business meaning
+- ai.general                     — any other significant quality or maintainability concern
+
+Severity guide:
+- error: blocks understanding or correctness
+- warning: significant smell that should be fixed
+- info: low-priority improvement
+
+Be specific: quote the actual SQL or column name in your message when relevant.
+Only flag real issues — do not invent violations for well-written code.`}</pre>
+                </details>
+
+                <label className="drawer-label-block" style={{ marginTop: 12 }}>
+                  <span>Custom instructions <span className="field-tag-optional">optional</span></span>
+                  <textarea
+                    className="prompt-custom-textarea"
+                    rows={6}
+                    placeholder={`Add your team's specific rules here. For example:\n- Flag any model that uses DISTINCT without a comment explaining why\n- Warn when a mart model has more than 20 columns without a description\n- Error on any use of SELECT * in production models`}
+                    value={config.ai_provider.additional_instructions}
+                    onChange={(e) =>
+                      updateConfig((next) => { next.ai_provider.additional_instructions = e.target.value; })
+                    }
+                  />
+                  <span className="drawer-field-hint">
+                    Plain text. Each line is a rule or instruction. Appended after the default prompt above.
+                  </span>
+                </label>
+              </div>
+            )}
 
             {/* ── Scan Defaults ── */}
             <div className="drawer-section">
