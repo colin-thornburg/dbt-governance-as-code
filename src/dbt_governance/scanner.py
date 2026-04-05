@@ -29,6 +29,7 @@ import dbt_governance.rules.style  # noqa: F401
 import dbt_governance.rules.governance  # noqa: F401
 import dbt_governance.rules.migration  # noqa: F401
 import dbt_governance.rules.reuse  # noqa: F401
+import dbt_governance.rules.security  # noqa: F401
 
 
 class CategoryScore(BaseModel):

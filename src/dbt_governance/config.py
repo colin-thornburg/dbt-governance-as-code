@@ -75,6 +75,13 @@ class ReuseRules(BaseModel):
     rules: dict[str, RuleConfig] = Field(default_factory=dict)
 
 
+class SecurityRules(BaseModel):
+    """Rules that enforce security hygiene — PII tagging, credential detection, and access policy.
+    Designed to accelerate security reviews and ensure sensitive data is properly governed."""
+    enabled: bool = True
+    rules: dict[str, RuleConfig] = Field(default_factory=dict)
+
+
 class AIProviderConfig(BaseModel):
     enabled: bool = False
     api_key_env_var: str | None = None
@@ -189,6 +196,7 @@ class GovernanceConfig(BaseModel):
     style: StyleRules = Field(default_factory=StyleRules)
     migration: MigrationRules = Field(default_factory=MigrationRules)
     reuse: ReuseRules = Field(default_factory=ReuseRules)
+    security: SecurityRules = Field(default_factory=SecurityRules)
     ai_review: AIReviewRules = Field(default_factory=AIReviewRules)
     custom_rules: list[CustomRule] = Field(default_factory=list)
 
@@ -348,6 +356,11 @@ testing:
     no_disabled_tests:
       enabled: true
       severity: warning
+    column_test_coverage:
+      enabled: true
+      severity: warning
+      min_coverage_pct: 0.5
+      description: "At least 50% of documented columns should have tests"
 
 documentation:
   enabled: true
@@ -382,6 +395,18 @@ materialization:
     incremental_must_have_on_schema_change:
       enabled: true
       severity: warning
+    marts_not_view:
+      enabled: true
+      severity: warning
+      description: "Mart and intermediate models must not be views — views bypass caching and increase query cost"
+    incremental_requires_partition:
+      enabled: true
+      severity: warning
+      description: "Incremental models should define partition_by to limit scan size and reduce warehouse costs"
+    table_requires_cluster_by:
+      enabled: true
+      severity: info
+      description: "Mart table/incremental models should define cluster_by for query performance"
 
 style:
   enabled: true
@@ -467,6 +492,44 @@ reuse:
       enabled: true
       severity: info
       description: "Multiple models select the same columns from the same base — likely copy-pasted"
+
+governance:
+  enabled: true
+  rules:
+    model_ownership_required:
+      enabled: true
+      severity: warning
+      description: "All models must have meta.owner or a group defined"
+    public_models_need_contract:
+      enabled: true
+      severity: error
+      description: "Models with public access must have contract: {enforced: true}"
+    required_meta_fields:
+      enabled: false
+      severity: warning
+      fields: []
+      description: "Enforce a custom list of required meta fields on all models (e.g. domain, team, slack_channel)"
+
+# ---------------------------------------------------------------------------
+# Security Rules
+# Detects PII handling gaps, hardcoded credentials, and missing access policy
+# definitions. Designed to accelerate security reviews and risk assessments.
+# ---------------------------------------------------------------------------
+security:
+  enabled: true
+  rules:
+    pii_columns_tagged:
+      enabled: true
+      severity: warning
+      description: "Models with PII-sounding column names (email, phone, ssn, dob, etc.) must have a pii/sensitive tag"
+    no_hardcoded_credentials:
+      enabled: true
+      severity: error
+      description: "SQL must not contain hardcoded credentials, API keys, or connection strings"
+    privileged_access_policy:
+      enabled: true
+      severity: info
+      description: "Sources with user/customer/transaction data should have meta.data_classification defined"
 
 ai_review:
   enabled: false

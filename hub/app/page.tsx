@@ -9,6 +9,7 @@ import {
   defaultGovernanceConfig,
   aiMdFilename,
   generateClaudeMd,
+  generateCopilotMd,
   generateGeminiMd,
   generateReviewMd,
   generateYaml,
@@ -22,7 +23,7 @@ import {
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type PreviewMode = "yaml" | "review" | "claude";
+type PreviewMode = "yaml" | "review" | "claude" | "copilot";
 type WorkspaceTab = CategoryKey | "artifacts" | "run";
 
 const severityOptions: Severity[] = ["error", "warning", "info"];
@@ -344,6 +345,7 @@ export default function Home() {
     [config]
   );
   const aiMdName = aiMdFilename(config.ai_provider.provider);
+  const copilotMdPreview = useMemo(() => generateCopilotMd(config), [config]);
 
   // Derived from loaded environments
   const uniqueProjects = useMemo(() => {
@@ -482,6 +484,7 @@ export default function Home() {
   function previewContent(): string {
     if (previewMode === "review") return reviewPreview;
     if (previewMode === "claude") return aiMdPreview;
+    if (previewMode === "copilot") return copilotMdPreview;
     return yamlPreview;
   }
 
@@ -838,23 +841,23 @@ export default function Home() {
           </p>
         </div>
 
-        <div className="hero-panel">
-          <div className="metric">
-            <span>Enabled rules</span>
-            <strong>{enabledRuleCount}</strong>
-          </div>
-          <div className="metric">
-            <span>Error rules</span>
-            <strong>{severities.error}</strong>
-          </div>
-          <div className="metric">
-            <span>Warning rules</span>
-            <strong>{severities.warning}</strong>
-          </div>
-          <div className="metric">
-            <span>Info rules</span>
-            <strong>{severities.info}</strong>
-          </div>
+        <div className="rules-stat-bar">
+          <span className="rules-stat rules-stat-total">
+            <strong>{enabledRuleCount}</strong> rules enabled
+          </span>
+          <span className="rules-stat-divider" />
+          <span className="rules-stat">
+            <span className="stat-dot stat-dot-error" />
+            <strong>{severities.error}</strong> error
+          </span>
+          <span className="rules-stat">
+            <span className="stat-dot stat-dot-warning" />
+            <strong>{severities.warning}</strong> warning
+          </span>
+          <span className="rules-stat">
+            <span className="stat-dot stat-dot-info" />
+            <strong>{severities.info}</strong> info
+          </span>
         </div>
       </section>
 
@@ -1528,13 +1531,19 @@ export default function Home() {
                   <h2>Live previews and downloads</h2>
                 </div>
                 <div className="chip-row">
-                  {(["yaml", "review", "claude"] as PreviewMode[]).map((mode) => (
+                  {(["yaml", "review", "claude", "copilot"] as PreviewMode[]).map((mode) => (
                     <button
                       key={mode}
                       className={mode === previewMode ? "chip active" : "chip"}
                       onClick={() => setPreviewMode(mode)}
                     >
-                      {mode === "yaml" ? ".dbt-governance.yml" : mode === "review" ? "REVIEW.md" : aiMdName}
+                      {mode === "yaml"
+                        ? ".dbt-governance.yml"
+                        : mode === "review"
+                        ? "REVIEW.md"
+                        : mode === "copilot"
+                        ? "copilot-instructions.md"
+                        : aiMdName}
                     </button>
                   ))}
                 </div>
@@ -1549,6 +1558,9 @@ export default function Home() {
                 </button>
                 <button className="primary-button secondary" onClick={() => downloadFile(aiMdName, aiMdPreview)}>
                   Download {aiMdName}
+                </button>
+                <button className="primary-button secondary" onClick={() => downloadFile("copilot-instructions.md", copilotMdPreview)}>
+                  Download copilot-instructions.md
                 </button>
                 {scanResult && (
                   <button
@@ -2281,16 +2293,19 @@ jobs:
                 <span className="info-icon-wrap">
                   <span className="info-icon">i</span>
                   <div className="info-tooltip">
-                    <strong>Three files are generated:</strong>
+                    <strong>Four files are generated:</strong>
                     <ul>
                       <li>
-                        <strong>.dbt-governance.yml</strong> — the machine-readable ruleset. The governance scanner reads this file to know which rules are active, their severity levels, and any per-rule configuration. Commit it to your repo root so every developer and CI job enforces the same standards.
+                        <strong>.dbt-governance.yml</strong> — the machine-readable ruleset. Commit to your repo root; the scanner and CI job read this to enforce rules.
                       </li>
                       <li>
-                        <strong>REVIEW.md</strong> — a checklist for <em>human</em> code reviewers only (not read by AI). It summarises every enabled rule in plain English so reviewers know exactly what to look for during pull request review, without having to read the YAML.
+                        <strong>REVIEW.md</strong> — a plain-English checklist for human PR reviewers. Not read by AI tools.
                       </li>
                       <li>
-                        <strong>{aiMdName}</strong> — instructions for your AI coding assistant. Read automatically by Claude Code (CLAUDE.md) or Gemini CLI (GEMINI.md) on every PR, so generated code respects your conventions before a human reviewer sees it.
+                        <strong>{aiMdName}</strong> — instructions for Claude Code (CLAUDE.md) or Gemini CLI (GEMINI.md). Read automatically on every PR so generated code respects your conventions.
+                      </li>
+                      <li>
+                        <strong>copilot-instructions.md</strong> — instructions for GitHub Copilot Code Review. Must be committed to <code>.github/copilot-instructions.md</code> on the base branch. Hard limit: 4,000 characters (Copilot silently truncates beyond that).
                       </li>
                     </ul>
                   </div>
@@ -2309,6 +2324,9 @@ jobs:
             </button>
             <button className="primary-button secondary" disabled={!isDownloadReady} onClick={() => downloadFile(aiMdName, aiMdPreview)}>
               Download {aiMdName}
+            </button>
+            <button className="primary-button secondary" disabled={!isDownloadReady} onClick={() => downloadFile("copilot-instructions.md", copilotMdPreview)}>
+              Download copilot-instructions.md
             </button>
             {scanResult && (
               <button
@@ -2668,32 +2686,39 @@ jobs:
           </div>
           <div className="info-tooltip-body">
             <p style={{ marginBottom: 10 }}>
-              This is where your work from the rule configuration tabs gets turned into real files. Everything you toggled on the left — which rules are enabled, their severity levels, any custom thresholds — is reflected here as a live preview. <strong>Nothing is saved or applied until you download and commit these files to your dbt repository.</strong>
+              This is where your rule configuration gets turned into real files. Everything you toggled — which rules are enabled, their severity levels, any custom thresholds — is reflected here as a live preview. <strong>Nothing is saved or applied until you download and commit these files to your dbt repository.</strong>
             </p>
-            <p style={{ marginBottom: 10 }}>
-              <strong style={{ display: "inline" }}>What to do in this section:</strong>
+            <p style={{ marginBottom: 6 }}>
+              <strong>What to do in this section:</strong>
             </p>
-            <ol style={{ margin: "0 0 10px 0", paddingLeft: 16 }}>
-              <li style={{ marginBottom: 6 }}><strong>Preview each file</strong> using the three buttons at the top right (<code>.dbt-governance.yml</code>, <code>REVIEW.md</code>, <code>CLAUDE.md</code>) to see exactly what will be generated before you download anything.</li>
-              <li style={{ marginBottom: 6 }}><strong>Download all three files</strong> using the buttons at the top of this panel or the bar at the bottom of the page.</li>
-              <li style={{ marginBottom: 6 }}><strong>Commit all three files to the root of your dbt repository</strong> — the same folder that contains your <code>dbt_project.yml</code>. That single commit is the entire setup.</li>
+            <ol style={{ margin: "0 0 12px 0", paddingLeft: 16 }}>
+              <li style={{ marginBottom: 6 }}><strong>Preview each file</strong> using the tabs at the top (<code>.dbt-governance.yml</code>, <code>REVIEW.md</code>, <code>CLAUDE.md</code>, <code>copilot-instructions.md</code>).</li>
+              <li style={{ marginBottom: 6 }}><strong>Download the files you need</strong> using the buttons above or the bar at the bottom of the page.</li>
+              <li style={{ marginBottom: 6 }}><strong>Commit them to the correct location</strong> in your dbt repository — placement matters (see below).</li>
             </ol>
-            <p style={{ marginBottom: 10 }}>
-              <strong style={{ display: "inline" }}>What each file does once committed:</strong>
+            <p style={{ marginBottom: 6 }}>
+              <strong>What each file does and where it goes:</strong>
             </p>
-            <ul>
-              <li style={{ marginBottom: 8 }}>
-                <strong>.dbt-governance.yml</strong> — the machine-readable ruleset. The <code>dbt-governance scan</code> command reads this file to know which rules to enforce, at what severity, and with what thresholds. Your CI pipeline runs this command on every pull request and blocks the merge if errors are found.
+            <ul style={{ margin: "0 0 12px 0", paddingLeft: 16 }}>
+              <li style={{ marginBottom: 10 }}>
+                <strong>.dbt-governance.yml</strong> — place in the <strong>root of your dbt repo</strong> (same folder as <code>dbt_project.yml</code>). The <code>dbt-governance scan</code> CLI reads this to know which rules to enforce, at what severity, and with what thresholds. Your CI pipeline runs this on every PR and fails the merge if errors are found.
               </li>
-              <li style={{ marginBottom: 8 }}>
-                <strong>REVIEW.md</strong> — a checklist for <em>human</em> code reviewers. It lists every enabled rule in plain English so reviewers can quickly check whether a PR meets your standards without needing to understand YAML or run any commands.
+              <li style={{ marginBottom: 10 }}>
+                <strong>REVIEW.md</strong> — place in the <strong>root of your dbt repo</strong>. A plain-English checklist for human code reviewers. Claude Code Review also reads this automatically on every PR when the action is installed.
               </li>
-              <li style={{ marginBottom: 8 }}>
-                <strong>CLAUDE.md</strong> — instructions for AI coding assistants (Claude, Copilot, Cursor, and others). When an AI helps a developer write or modify a dbt model, it reads this file first so the code it generates already follows your naming conventions, structure rules, and SQL style — before a human even reviews it.
+              <li style={{ marginBottom: 10 }}>
+                <strong>CLAUDE.md / GEMINI.md</strong> — place in the <strong>root of your dbt repo</strong>. Read automatically by Claude Code or Google Gemini CLI when a developer opens the repo. Ensures any AI-assisted code already follows your conventions before a reviewer sees it.
+              </li>
+              <li style={{ marginBottom: 4 }}>
+                <strong>copilot-instructions.md</strong> — place at <strong><code>.github/copilot-instructions.md</code></strong> in your dbt repo (the <code>.github/</code> folder in the root, not the repo root itself). GitHub Copilot Code Review reads this file automatically on every pull request and applies your governance rules as inline PR comments — no Actions workflow required. Two things to know:
+                <ul style={{ marginTop: 6, paddingLeft: 16 }}>
+                  <li style={{ marginBottom: 4 }}><strong>4,000-character limit</strong> — Copilot Code Review only reads the first 4,000 characters of this file. The generated file is kept well under that limit. If you add many custom rules and approach the limit, the file will include a truncation notice.</li>
+                  <li><strong>Base branch only</strong> — Copilot reads the instructions from your base branch (e.g. <code>main</code>), not the feature branch. Merge any updates to <code>main</code> before expecting Copilot to apply them on new PRs.</li>
+                </ul>
               </li>
             </ul>
             <p style={{ marginBottom: 0, opacity: 0.75, fontSize: "0.7rem" }}>
-              Tip: if you change your mind about any rules later, just come back, adjust the toggles, and re-download. The files are always regenerated fresh from your current settings.
+              Tip: if you change any rules, re-download the relevant files and commit the update. Everything is always regenerated fresh from your current settings.
             </p>
           </div>
         </div>

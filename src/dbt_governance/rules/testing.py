@@ -159,3 +159,49 @@ class NoDisabledTestsRule(BaseRule):
                     suggestion="Remove 'enabled: false' or fix the underlying issue instead of disabling",
                 ))
         return violations
+
+
+@register_rule
+class ColumnTestCoverageRule(BaseRule):
+    rule_id = "testing.column_test_coverage"
+    category = "testing"
+    description = "At least a minimum percentage of documented columns should have tests"
+    default_severity = Severity.WARNING
+
+    def evaluate(self, context: RuleContext) -> list[Violation]:
+        severity = self.get_severity(context.governance_config)
+        min_pct = float(self.get_rule_config_value(context.governance_config, "min_coverage_pct", 0.5))
+        violations = []
+
+        for model in context.manifest_data.models.values():
+            if context.governance_config.is_path_excluded(model.file_path):
+                continue
+            if not model.columns:
+                continue  # No schema.yml columns documented — skip (schema_yml_exists covers that)
+
+            columns_with_tests = {t.column_name for t in model.tests if t.column_name}
+            documented_cols = set(model.columns.keys())
+            if not documented_cols:
+                continue
+
+            coverage = len(columns_with_tests & documented_cols) / len(documented_cols)
+            if coverage < min_pct:
+                pct_actual = int(coverage * 100)
+                pct_required = int(min_pct * 100)
+                violations.append(Violation(
+                    rule_id=self.rule_id,
+                    severity=severity,
+                    model_name=model.name,
+                    file_path=model.file_path,
+                    message=(
+                        f"Model '{model.name}' has {pct_actual}% column test coverage "
+                        f"(minimum required: {pct_required}%). "
+                        f"{len(columns_with_tests & documented_cols)} of {len(documented_cols)} "
+                        f"documented columns have tests."
+                    ),
+                    suggestion=(
+                        f"Add tests (not_null, accepted_values, relationships) for at least "
+                        f"{pct_required}% of the model's documented columns in schema YAML."
+                    ),
+                ))
+        return violations

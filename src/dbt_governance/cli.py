@@ -14,7 +14,7 @@ from rich.console import Console
 
 from dbt_governance import __version__
 from dbt_governance.config import Severity, generate_default_config, load_config
-from dbt_governance.generators import write_claude_md, write_gemini_md, write_review_md, write_reuse_md
+from dbt_governance.generators import write_claude_md, write_copilot_md, write_gemini_md, write_review_md, write_reuse_md
 from dbt_governance.output.github import publish_github_check
 from dbt_governance.output.json_report import write_json
 from dbt_governance.output.sarif import to_sarif, write_sarif
@@ -152,6 +152,8 @@ def validate_config(
             "documentation",
             "materialization",
             "style",
+            "governance",
+            "security",
             "migration",
             "reuse",
         ]:
@@ -185,6 +187,7 @@ def list_rules():
     import dbt_governance.rules.governance  # noqa: F401
     import dbt_governance.rules.migration  # noqa: F401
     import dbt_governance.rules.reuse  # noqa: F401
+    import dbt_governance.rules.security  # noqa: F401
 
     from rich.table import Table
 
@@ -328,6 +331,37 @@ def generate_claude_md_command(
         raise typer.Exit(1)
 
     console.print(f"[green]Created {path}[/green]")
+
+
+@generate_app.command("copilot-md")
+def generate_copilot_md_command(
+    config: str = typer.Option(".dbt-governance.yml", "--config", "-c", help="Path to config file"),
+    output: str = typer.Option(
+        ".github/copilot-instructions.md",
+        "--output",
+        "-o",
+        help="Output file path (default: .github/copilot-instructions.md)",
+    ),
+):
+    """Generate .github/copilot-instructions.md for GitHub Copilot Code Review.
+
+    Output is kept under 4,000 characters — the limit Copilot Code Review
+    reads. Commit the file to your dbt repo's base branch; Copilot picks it
+    up automatically on every pull request.
+    """
+    try:
+        path = write_copilot_md(config_path=config, output_path=output)
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise typer.Exit(1)
+
+    char_count = path.read_text(encoding="utf-8").__len__()
+    console.print(f"[green]Created {path}[/green] ({char_count:,} chars — Copilot limit: 4,000)")
+    if char_count > 4000:
+        console.print(
+            "[yellow]Warning:[/yellow] file exceeds 4,000 characters. "
+            "Disable some rules or shorten descriptions so Copilot reads the full file."
+        )
 
 
 @generate_app.command("gemini-md")

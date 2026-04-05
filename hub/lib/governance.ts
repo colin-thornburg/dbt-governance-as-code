@@ -49,6 +49,8 @@ export type GovernanceConfig = {
   materialization: RuleCategory;
   style: RuleCategory;
   reuse: RuleCategory;
+  governance: RuleCategory;
+  security: RuleCategory;
 };
 
 export type RuleField =
@@ -73,6 +75,8 @@ export type CategoryDefinition = {
     | "materialization"
     | "style"
     | "reuse"
+    | "governance"
+    | "security"
   >;
   title: string;
   description: string;
@@ -209,6 +213,12 @@ export const categoryDefinitions: CategoryDefinition[] = [
         key: "no_disabled_tests",
         label: "Disabled tests are flagged",
         helper: "Prevent test debt from hiding in schema YAML."
+      },
+      {
+        key: "column_test_coverage",
+        label: "Minimum column test coverage",
+        helper: "Ensures a minimum percentage of documented columns have at least one test. Catches models where only the primary key is tested and all business-logic columns go unchecked.",
+        fields: [{ key: "min_coverage_pct", label: "Min coverage (0–1)", type: "number" }]
       }
     ]
   },
@@ -267,6 +277,21 @@ export const categoryDefinitions: CategoryDefinition[] = [
         key: "incremental_must_have_on_schema_change",
         label: "Incremental models should define on_schema_change",
         helper: "Make schema evolution explicit instead of accidental."
+      },
+      {
+        key: "marts_not_view",
+        label: "Mart and intermediate models must not be views",
+        helper: "Views in these layers recompute on every query and bypass warehouse caching — a direct cost and latency hit. Use table or incremental."
+      },
+      {
+        key: "incremental_requires_partition",
+        label: "Incremental models should define partition_by",
+        helper: "Without a partition key, every incremental run scans the full table. Partitioning by a date or timestamp column limits scan size and dramatically reduces compute cost."
+      },
+      {
+        key: "table_requires_cluster_by",
+        label: "Mart table/incremental models should define cluster_by",
+        helper: "Clustering groups rows by commonly filtered columns (customer_id, order_date), enabling the warehouse to skip entire micro-partitions on query. Pick columns that appear frequently in WHERE and JOIN clauses."
       }
     ]
   },
@@ -350,6 +375,53 @@ export const categoryDefinitions: CategoryDefinition[] = [
         key: "identical_select_columns",
         label: "Identical column selections from the same base should be a shared model",
         helper: "Multiple models selecting the same columns from the same upstream is a high-confidence copy-paste signal."
+      }
+    ]
+  },
+  {
+    key: "governance",
+    title: "Governance Rules",
+    description: "Enforce ownership, access controls, and meta standards across every model.",
+    accent: "var(--accent-violet)",
+    rules: [
+      {
+        key: "model_ownership_required",
+        label: "All models must have an owner or group",
+        helper: "Without an owner, there is no accountability for model quality, deprecation, or incident response. Use meta.owner or dbt groups."
+      },
+      {
+        key: "public_models_need_contract",
+        label: "Public models must have a contract enforced",
+        helper: "Public access models are shared APIs. Enforce a contract so downstream consumers are protected against silent schema changes."
+      },
+      {
+        key: "required_meta_fields",
+        label: "Enforce required meta fields on all models",
+        helper: "Define a list of meta fields every model must carry — e.g. domain, team, slack_channel, data_product. Leaves a zero-config no-op until you configure the fields list.",
+        fields: [{ key: "fields", label: "Required fields (comma-separated)", type: "list" }]
+      }
+    ]
+  },
+  {
+    key: "security",
+    title: "Security Rules",
+    description: "Detect PII handling gaps, hardcoded secrets, and missing access policy declarations to accelerate security reviews.",
+    accent: "var(--accent-red)",
+    rules: [
+      {
+        key: "pii_columns_tagged",
+        label: "Models with PII columns must carry a pii or sensitive tag",
+        helper: "Columns named email, phone, ssn, dob, address, credit_card, etc. trigger this rule. A pii/sensitive tag enables lineage-aware access policy tools to find all personal data in the warehouse automatically."
+      },
+      {
+        key: "no_hardcoded_credentials",
+        label: "No hardcoded credentials, API keys, or connection strings in SQL",
+        helper: "Scans raw SQL for password=, api_key=, bearer token, AWS IAM key patterns, and JDBC connection strings. Any match is an ERROR — rotate the secret immediately and move it to env_var()."
+      },
+      {
+        key: "privileged_access_policy",
+        label: "Sources with user or transaction data should declare data_classification",
+        helper: "Sources whose name contains user, customer, patient, payment, order, etc. should have meta.data_classification set. This accelerates security risk assessments by making sensitivity explicit in lineage."
       }
     ]
   }
@@ -506,6 +578,12 @@ export const defaultGovernanceConfig: GovernanceConfig = {
         enabled: true,
         severity: "warning",
         description: "Tests should not be disabled"
+      },
+      column_test_coverage: {
+        enabled: true,
+        severity: "warning",
+        min_coverage_pct: 0.5,
+        description: "At least 50% of documented columns should have tests"
       }
     }
   },
@@ -558,6 +636,21 @@ export const defaultGovernanceConfig: GovernanceConfig = {
         enabled: true,
         severity: "warning",
         description: "Incremental models should define on_schema_change strategy"
+      },
+      marts_not_view: {
+        enabled: true,
+        severity: "warning",
+        description: "Mart and intermediate models must not be materialized as view"
+      },
+      incremental_requires_partition: {
+        enabled: true,
+        severity: "warning",
+        description: "Incremental models should define partition_by to limit scan size and reduce warehouse costs"
+      },
+      table_requires_cluster_by: {
+        enabled: true,
+        severity: "info",
+        description: "Mart table/incremental models should define cluster_by for query performance"
       }
     }
   },
@@ -633,6 +726,47 @@ export const defaultGovernanceConfig: GovernanceConfig = {
         enabled: true,
         severity: "info",
         description: "Multiple models select the same column set from the same base — likely copy-pasted"
+      }
+    }
+  },
+  governance: {
+    enabled: true,
+    rules: {
+      model_ownership_required: {
+        enabled: true,
+        severity: "warning",
+        description: "All models must have meta.owner or a group defined"
+      },
+      public_models_need_contract: {
+        enabled: true,
+        severity: "error",
+        description: "Models with public access must have contract: {enforced: true}"
+      },
+      required_meta_fields: {
+        enabled: false,
+        severity: "warning",
+        fields: [],
+        description: "Enforce a custom list of required meta fields on all models"
+      }
+    }
+  },
+  security: {
+    enabled: true,
+    rules: {
+      pii_columns_tagged: {
+        enabled: true,
+        severity: "warning",
+        description: "Models with PII-sounding column names must have a pii or sensitive tag"
+      },
+      no_hardcoded_credentials: {
+        enabled: true,
+        severity: "error",
+        description: "SQL must not contain hardcoded credentials, API keys, or connection strings"
+      },
+      privileged_access_policy: {
+        enabled: true,
+        severity: "info",
+        description: "Sources with user/customer/transaction data should have meta.data_classification defined"
       }
     }
   }
@@ -857,6 +991,77 @@ export function generateGeminiMd(config: GovernanceConfig): string {
 /** Returns the correct AI context filename for the selected provider. */
 export function aiMdFilename(provider: AiProvider): string {
   return provider === "gemini" ? "GEMINI.md" : "CLAUDE.md";
+}
+
+const COPILOT_CHAR_LIMIT = 4000;
+const COPILOT_SAFE_LIMIT = 3900;
+
+/**
+ * Generate .github/copilot-instructions.md for GitHub Copilot Code Review.
+ * GitHub Copilot Code Review reads only the first 4,000 characters of this file.
+ * Content is kept compact and imperative to fit within that limit.
+ */
+export function generateCopilotMd(config: GovernanceConfig): string {
+  const grouped = new Map<Severity, string[]>(severityOrder.map((severity) => [severity, []]));
+
+  for (const category of categoryDefinitions) {
+    const categoryState = config[category.key];
+    if (!categoryState.enabled) continue;
+    for (const rule of Object.values(categoryState.rules)) {
+      if (!rule.enabled) continue;
+      grouped.get(rule.severity)?.push(rule.description);
+    }
+  }
+
+  const linesFor = (severity: Severity): string[] =>
+    (grouped.get(severity) ?? []).map((item) => `- ${item}`);
+
+  const errors = linesFor("error");
+  const warnings = linesFor("warning");
+  const infos = linesFor("info");
+
+  const parts: string[] = [
+    `# dbt Governance — ${config.project.name}`,
+    "",
+    "<!-- Auto-generated from .dbt-governance.yml by dbt-governance -->",
+    "<!-- Kept under 4,000 chars for GitHub Copilot Code Review compatibility -->",
+    "",
+    "When reviewing dbt pull requests, apply the rules below.",
+    "Flag **errors** as blocking issues. Flag **warnings** as suggestions.",
+    "",
+  ];
+
+  if (config.project.description) {
+    parts.push(`> ${config.project.description.trim()}`, "");
+  }
+
+  if (errors.length) {
+    parts.push("## Must fix (errors — block merge)", ...errors, "");
+  }
+  if (warnings.length) {
+    parts.push("## Should fix (warnings — leave comment)", ...warnings, "");
+  }
+  if (infos.length) {
+    parts.push("## Consider (improvements — optional)", ...infos, "");
+  }
+
+  parts.push(
+    "## Scope",
+    `- Skip: ${config.global.exclude_paths.join(", ")}`,
+    config.global.changed_files_only
+      ? "- Focus on changed files only."
+      : "- Review the full affected dbt surface, not only changed files."
+  );
+
+  let content = parts.join("\n") + "\n";
+
+  if (content.length > COPILOT_CHAR_LIMIT) {
+    content =
+      content.slice(0, COPILOT_SAFE_LIMIT) +
+      "\n\n<!-- Rules truncated to fit Copilot 4,000-character limit. Run `dbt-governance generate copilot-md` to regenerate. -->\n";
+  }
+
+  return content;
 }
 
 export function cloneConfig(config: GovernanceConfig): GovernanceConfig {

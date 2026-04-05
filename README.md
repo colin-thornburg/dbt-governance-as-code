@@ -3,7 +3,7 @@
 **Configurable governance enforcement for dbt Cloud projects — runs in CI on every PR, no warehouse required.**
 
 Two core jobs:
-1. **Detect** — Scan any dbt project and produce a prioritized report of violations, legacy migration debt, and re-use opportunities. Hand it to a team with specific, actionable fix instructions.
+1. **Detect** — Scan any dbt project and produce a prioritized report of violations, re-use opportunities, and model redundancy. Hand it to a team with specific, actionable fix instructions.
 2. **Prevent** — Run 30+ deterministic rules on every pull request to block anti-patterns before they reach production.
 
 ---
@@ -11,8 +11,8 @@ Two core jobs:
 ## How it works
 
 ```
-Central Governance UI          downloads 3 config files
-(web configurator)        ──────────────────────────────▶   .dbt-governance.yml
+Central Governance Hub          downloads 3 config files
+(web dashboard)           ──────────────────────────────▶   .dbt-governance.yml
                                                              REVIEW.md
                                                              CLAUDE.md
                                      │
@@ -104,10 +104,48 @@ This is the right experience for:
 | **Style** | CTE patterns, no `SELECT *` in marts, final SELECT from named CTE, no hardcoded schemas |
 | **Governance** | Meta-governance hygiene — config completeness, version pinning |
 | **Migration** | Legacy ETL anti-patterns: hardcoded schemas, DDL statements, no `ref()`/`source()` calls, missing source definitions, no layer structure |
-| **Re-use** | Duplicate source staging, shared CTE candidates, multiple models from the same source, identical SELECT column sets |
+| **Re-use** | Duplicate source staging, shared CTE candidates, multiple models from the same source, identical SELECT column sets, pairwise model similarity scoring, multi-model cluster detection |
+| **AI Review** | Semantic review of model SQL and YAML using a configured LLM — flags business logic in staging, missing grain documentation, and other patterns deterministic rules can't catch |
 
-The reuse category now also includes model-level similarity scoring so the scanner can flag pairs of models that are structurally very similar even when they are not literal copy-pastes. It now also produces cluster-level recommendations, so the report can say "these 4 models should become one shared intermediate" instead of only showing disconnected pairs.
-JSON scan output now also includes a dedicated `reuse_report` section with ranked actions, grouped into clusters first and strongest remaining pairs second, so governance teams can work from an explicit remediation queue.
+The re-use category includes model-level similarity scoring so the scanner can flag pairs and clusters of structurally similar models even when they are not literal copy-pastes. The JSON scan output includes a dedicated `reuse_report` section with ranked actions grouped into clusters first and strongest remaining pairs second, so governance teams can work from an explicit remediation queue.
+
+---
+
+## AI Review
+
+The `--with-ai` flag (or `ai_review.enabled: true` in the config) sends each model's SQL and YAML to a configured LLM for semantic review. This catches issues that deterministic rules can't — business logic buried in staging models, undocumented grain assumptions, ambiguous metric definitions, and similar.
+
+### Supported models
+
+| Provider | Models | Install |
+|---|---|---|
+| **Anthropic** | `claude-sonnet-4-20250514` *(default)*, `claude-opus-4-6`, `claude-opus-4-1-20250805`, `claude-haiku-4-5-20251001` | `pip install 'dbt-governance[ai]'` |
+| **OpenAI** | `gpt-4o`, `gpt-4o-mini`, `gpt-5.4`, `gpt-5-mini` | `pip install 'dbt-governance[openai]'` |
+| **Google Gemini** | `gemini-2.5-pro`, `gemini-2.5-flash` | `pip install 'dbt-governance[gemini]'` |
+
+All extras together:
+
+```bash
+pip install 'dbt-governance[ai,openai,gemini]'
+```
+
+### Provider auto-detection
+
+If you run `dbt-governance scan --with-ai` without specifying a provider in the config, the CLI picks the first available API key in this order: configured provider → OpenAI → Anthropic → Gemini.
+
+### Customising the review prompt
+
+The `additional_instructions` field appends team-specific rules to the built-in system prompt. These instructions are visible and editable in the Central Governance Hub under **Settings → AI Review Prompt**.
+
+```yaml
+ai_review:
+  enabled: true
+  provider: anthropic
+  model: claude-sonnet-4-20250514
+  additional_instructions: |
+    - Flag any model that calculates revenue without explicitly handling refunds.
+    - Warn if a mart model has more than 20 columns without a documented grain.
+```
 
 ---
 
@@ -117,15 +155,15 @@ JSON scan output now also includes a dedicated `reuse_report` section with ranke
 - **dbt Cloud account** — for Cloud mode (recommended). Requires a service token with Metadata Only permissions.
 - **Local `manifest.json`** — fallback for local scans without dbt Cloud. Generate with `dbt parse` (no warehouse needed).
 - **Git provider** — GitHub, GitLab, or Azure DevOps for CI enforcement.
-- **AI provider API key** — optional, for semantic review. Supports Anthropic, OpenAI, and Gemini.
+- **AI provider API key** — optional, for semantic review. Supports Anthropic, OpenAI, and Gemini (see [AI Review](#ai-review)).
 
 ---
 
 ## Quick start
 
-### Step 1 — Configure with the Central Governance UI
+### Step 1 — Configure with the Central Governance Hub
 
-Open the [Central Governance UI](hub/) locally:
+Open the [Central Governance Hub](hub/) locally:
 
 ```bash
 cd hub
@@ -134,14 +172,16 @@ npm run dev
 # Opens at http://localhost:3000
 ```
 
-Use the UI to configure your rule standards, then download three files:
-- `.dbt-governance.yml` — the enforcement config
-- `REVIEW.md` — review instructions for Claude Code Review
-- `CLAUDE.md` — project context for Claude Code
+The Hub is a full governance dashboard — not just a config editor. It lets you:
 
-The Re-use tab includes dedicated similarity-scoring controls with conservative, balanced, and discovery presets so teams can rank consolidation opportunities without manually tuning thresholds first, then review both pairwise matches and multi-model cluster recommendations in plain English.
-After running a scan in the UI, you can also download `REUSE_REPORT.md` to hand a ranked consolidation plan directly to a team.
-That report now starts with an executive summary so governance leads can quickly understand overall re-use risk, how many high-priority items exist, and which consolidation opportunities should be staffed first.
+- **Configure rules** across all categories with live YAML preview
+- **Run scans** directly against dbt Cloud environments or a local `manifest.json`
+- **Browse environments** — select one or more projects and environments to scan
+- **Re-use tab** — run a dedicated redundancy scan and get a ranked consolidation report with cluster and pair recommendations
+- **AI Review Prompt** — view the full system prompt being sent to the LLM and append team-specific rules via `additional_instructions`
+- **Download** `.dbt-governance.yml`, `REVIEW.md`, `CLAUDE.md`, and `REUSE_REPORT.md`
+
+For local scans in the Hub, provide the path to your `manifest.json` and the dbt project directory. The project directory is required when the manifest was generated by the dbt Fusion / Cloud CLI (which stores `--placeholder--` in `raw_code` instead of the actual SQL).
 
 ### Step 2 — Commit the config files to your dbt repo
 
@@ -158,6 +198,15 @@ git push
 
 ```bash
 pip install dbt-governance
+```
+
+To include AI review support, install the relevant extra:
+
+```bash
+pip install 'dbt-governance[ai]'          # Anthropic (Claude)
+pip install 'dbt-governance[openai]'      # OpenAI (GPT)
+pip install 'dbt-governance[gemini]'      # Google Gemini
+pip install 'dbt-governance[ai,openai,gemini]'  # All providers
 ```
 
 To generate a ranked markdown handoff report for re-use remediation after a scan:
@@ -309,7 +358,34 @@ steps:
 
 Add the three variables under **Pipelines → Library → Variable Groups** (mark each as secret).
 
-### Step 5 — Set up Claude Code Review (optional but recommended)
+### Step 5 — Set up AI code review (optional but recommended)
+
+#### GitHub Copilot Code Review
+
+GitHub Copilot Code Review reads `.github/copilot-instructions.md` from your repository's base branch and uses it to guide every PR review. Generate the file from your governance config:
+
+```bash
+dbt-governance generate copilot-md
+# writes .github/copilot-instructions.md  (~1,300 chars by default)
+```
+
+Or download it directly from the **Central Governance Hub** (Artifacts tab → Download copilot-instructions.md).
+
+Commit the file to your repo root:
+
+```bash
+git add .github/copilot-instructions.md
+git commit -m "chore: add Copilot governance instructions"
+git push
+```
+
+GitHub Copilot will then apply your governance rules as comments on every pull request automatically — no Actions workflow required.
+
+> **Important constraints:** Copilot Code Review only reads the **first 4,000 characters** of the file. The generator stays well within that limit by default. If you have a large number of custom rules, the CLI will warn you when the output exceeds the limit.
+>
+> Instructions are read from the **base branch** (e.g. `main`), not the feature branch. Update the file on `main` when you change your governance config.
+
+#### Claude Code Review
 
 Once `CLAUDE.md` and `REVIEW.md` are committed, Claude Code Review works automatically for developers using Claude Code locally. For automated review on every PR, add a second GitHub Action:
 
@@ -345,16 +421,16 @@ If Claude Code Review is installed on the repo, the user experience is:
 | `DBT_CLOUD_API_TOKEN` | dbt Cloud → Account Settings → Service Tokens → New Token (Metadata Only) | Cloud mode scan |
 | `DBT_CLOUD_ACCOUNT_ID` | Visible in your dbt Cloud URL: `cloud.getdbt.com/accounts/12345` | Cloud mode scan |
 | `DBT_CLOUD_ENVIRONMENT_ID` | dbt Cloud → Environments page | Cloud mode scan |
-| `ANTHROPIC_API_KEY` | [console.anthropic.com](https://console.anthropic.com) → API keys | Anthropic semantic review or Claude Code Review (optional) |
-| `OPENAI_API_KEY` | [platform.openai.com](https://platform.openai.com/api-keys) → API keys | OpenAI semantic review (optional) |
-| `GEMINI_API_KEY` | [ai.google.dev](https://ai.google.dev/) → API key | Gemini semantic review (optional) |
+| `ANTHROPIC_API_KEY` | [console.anthropic.com](https://console.anthropic.com) → API keys | Anthropic AI review or Claude Code Review (optional) |
+| `OPENAI_API_KEY` | [platform.openai.com](https://platform.openai.com/api-keys) → API keys | OpenAI AI review (optional) |
+| `GEMINI_API_KEY` | [ai.google.dev](https://ai.google.dev/) → API key | Gemini AI review (optional) |
 
 GitHub Actions automatically provides:
 - `GITHUB_TOKEN`
 - `GITHUB_SHA`
 - `GITHUB_REPOSITORY`
 
-For `pull_request` workflows, prefer overriding `GITHUB_SHA` with `${{ github.event.pull_request.head.sha }}` so the governance check attaches to the PR head commit instead of the temporary merge SHA. With that override in place, the default GitHub env plus `checks: write` is sufficient for `--github-annotate`.
+For `pull_request` workflows, prefer overriding `GITHUB_SHA` with `${{ github.event.pull_request.head.sha }}` so the governance check attaches to the PR head commit instead of the temporary merge SHA.
 
 For local development, create a `.env` file in the project root (never commit this):
 
@@ -368,11 +444,7 @@ OPENAI_API_KEY=sk-proj-xxxxxxxxxxxxxxxxxxxx    # optional
 GEMINI_API_KEY=xxxxxxxxxxxxxxxxxxxx            # optional
 ```
 
-The CLI auto-loads `.env` via python-dotenv.
-
-If you run `dbt-governance scan --with-ai` without explicitly enabling `ai_review` in the YAML,
-the CLI will automatically pick the first available provider key in this order:
-configured provider, OpenAI, Anthropic, Gemini.
+The CLI and the Central Governance Hub both auto-load `.env` from the project root.
 
 ---
 
@@ -397,18 +469,21 @@ dbt-governance scan --local --manifest target/manifest.json --project-dir . --ch
 # Run a scan and output SARIF for code scanning integrations
 dbt-governance scan --output sarif --output-file results.sarif
 
-# Run a scan using a local manifest.json
-dbt-governance scan --local --manifest target/manifest.json
-
 # Scope scan to specific rule categories
-dbt-governance scan --rules migration,reuse
+dbt-governance scan --rules naming,structure
+dbt-governance scan --rules reuse          # redundancy analysis only
 
-# Run semantic review using the first available AI provider key
+# Run semantic AI review using the first available provider key
 dbt-governance scan --with-ai
 
-# Generate the Claude Code Review files from your current config
-dbt-governance generate review-md
-dbt-governance generate claude-md
+# Generate AI assistant / code review context files
+dbt-governance generate review-md       # REVIEW.md  — human reviewer checklist
+dbt-governance generate claude-md       # CLAUDE.md  — Claude Code context
+dbt-governance generate gemini-md       # GEMINI.md  — Gemini CLI context
+dbt-governance generate copilot-md      # .github/copilot-instructions.md — GitHub Copilot Code Review
+
+# Generate a ranked re-use remediation report
+dbt-governance generate reuse-md --local --manifest target/manifest.json --project-dir .
 
 # Test your dbt Cloud connection
 dbt-governance cloud test-connection
@@ -427,13 +502,88 @@ dbt-governance version
 
 ## Configuration reference
 
-The full configuration lives in `.dbt-governance.yml`. Generate a default with `dbt-governance init`, or use the [Central Governance UI](hub/) for a visual editor.
+The full configuration lives in `.dbt-governance.yml`. Generate a default with `dbt-governance init`, or use the [Central Governance Hub](hub/) for a visual editor.
+
+```yaml
+version: 1
+
+project:
+  name: "My dbt Project"
+  description: "Governance baseline for all dbt Cloud projects."
+
+dbt_cloud:
+  enabled: true
+  account_id: 12345        # DBT_CLOUD_ACCOUNT_ID env var also works
+  environment_id: 67890   # DBT_CLOUD_ENVIRONMENT_ID env var also works
+
+global:
+  severity_default: error   # error | warning | info
+  fail_on: error            # CI fails when any violation at this level or above is found
+  changed_files_only: true
+  exclude_paths:
+    - "target/"             # paths to skip entirely
+
+# Each category has an enabled flag, severity override, and rule-specific options.
+# See examples/.dbt-governance.yml for the complete reference.
+naming:
+  enabled: true
+  rules:
+    staging_prefix:
+      enabled: true
+      severity: error
+    # ... more rules
+
+ai_review:
+  enabled: true
+  provider: anthropic                      # anthropic | openai | gemini
+  model: claude-sonnet-4-20250514          # see AI Review section for all supported models
+  max_tokens_per_review: 4096
+  additional_instructions: |              # appended to the built-in system prompt
+    - Flag any model that calculates revenue without explicitly handling refunds.
+    - Warn if a mart model has more than 20 columns without a documented grain.
+  anthropic:
+    enabled: true
+    api_key_env_var: ANTHROPIC_API_KEY
+    models:
+      - claude-sonnet-4-20250514
+      - claude-opus-4-6
+  openai:
+    enabled: false
+    api_key_env_var: OPENAI_API_KEY
+    models:
+      - gpt-4o-mini
+  gemini:
+    enabled: false
+    api_key_env_var: GEMINI_API_KEY
+    models:
+      - gemini-2.5-flash
+```
+
+See [`examples/.dbt-governance.yml`](examples/.dbt-governance.yml) for a complete, annotated configuration.
+
+---
+
+## Demo project
+
+A self-contained example dbt project lives in [`demo-project/`](demo-project/). It uses DuckDB and seed data, and intentionally triggers every re-use rule so you can see the scanner in action without connecting to a real warehouse.
+
+Rules it triggers:
+
+| Model(s) | Rule |
+|---|---|
+| `stg_orders` + `stg_orders_v2` | `duplicate_source_staging` — two staging models reference the same source |
+| `int_orders_daily/weekly/monthly` | `model_similarity_candidates` + `model_similarity_clusters` — three near-identical intermediate models |
+| `int_orders_daily/weekly/monthly` | `shared_cte_candidates` — `active_orders` CTE duplicated across 3 models |
+| `int_payment_analysis` + `fct_revenue` | `multiple_models_from_same_source` — non-staging models bypass the staging layer |
+| `fct_orders` + `fct_orders_v2` | `identical_select_columns` — same 6-column projection from the same ref |
+
+To scan it in the Hub, switch to **Local** mode, set the manifest path to `demo-project/target/manifest.json`, and the project directory to `demo-project`. The manifest is pre-generated; re-run `dbt parse` inside `demo-project/` if you modify any models.
 
 ---
 
 ## PR Automation Harness
 
-This repo now includes a dedicated fixture-repo automation system under `scripts/e2e/`.
+This repo includes a fixture-repo automation system under `scripts/e2e/`.
 
 ### What it does
 
@@ -476,51 +626,6 @@ Those artifacts tell you whether:
 
 ---
 
-```yaml
-version: 1
-
-project:
-  name: "My dbt Project"
-  description: "Governance baseline for all dbt Cloud projects."
-
-dbt_cloud:
-  enabled: true
-  account_id: 12345        # DBT_CLOUD_ACCOUNT_ID env var also works
-  environment_id: 67890   # DBT_CLOUD_ENVIRONMENT_ID env var also works
-
-global:
-  severity_default: error   # error | warning | info
-  fail_on: error            # CI fails when any violation at this level or above is found
-  changed_files_only: true
-  exclude_paths:
-    - "target/"             # paths to skip entirely
-
-# Each category has an enabled flag, severity override, and rule-specific options.
-# See examples/.dbt-governance.yml for the complete reference.
-naming:
-  enabled: true
-  rules:
-    staging_prefix:
-      enabled: true
-      severity: error
-    # ... more rules
-
-ai_review:
-  enabled: true
-  provider: openai
-  model: gpt-5-mini
-  max_tokens_per_review: 4096
-  openai:
-    enabled: true
-    api_key_env_var: OPENAI_API_KEY
-    models:
-      - gpt-5-mini
-```
-
-See [`examples/.dbt-governance.yml`](examples/.dbt-governance.yml) for a complete, annotated configuration.
-
----
-
 ## Local development
 
 ```bash
@@ -534,6 +639,9 @@ source .venv/bin/activate  # Windows: .venv\Scripts\activate
 
 # Install with dev dependencies
 pip install -e ".[dev]"
+
+# Install optional AI extras
+pip install -e ".[ai,openai,gemini]"
 
 # Copy the environment template
 cp .env.example .env
@@ -549,7 +657,7 @@ ruff check src/ tests/
 dbt-governance scan
 ```
 
-### Running the Central Governance UI locally
+### Running the Central Governance Hub locally
 
 ```bash
 cd hub
@@ -558,7 +666,7 @@ npm run dev
 # Opens at http://localhost:3000
 ```
 
-The UI is a static Next.js app — no backend required. It generates config files for download; the actual scanning is done by the Python CLI.
+The Hub is a Next.js application with server-side API routes. It reads your `.env` file from the project root to load `DBT_CLOUD_API_TOKEN` and AI provider keys — no additional configuration is needed for local development beyond the `.env` file.
 
 ---
 

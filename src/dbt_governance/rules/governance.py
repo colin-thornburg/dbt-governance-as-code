@@ -57,3 +57,41 @@ class PublicModelsNeedContractRule(BaseRule):
                     suggestion="Add contract: {{enforced: true}} — public models should guarantee column types for consumers",
                 ))
         return violations
+
+
+@register_rule
+class RequiredMetaFieldsRule(BaseRule):
+    rule_id = "governance.required_meta_fields"
+    category = "governance"
+    description = "All models must have a configurable set of required meta fields"
+    default_severity = Severity.WARNING
+
+    def evaluate(self, context: RuleContext) -> list[Violation]:
+        severity = self.get_severity(context.governance_config)
+        required_fields: list[str] = self.get_rule_config_value(
+            context.governance_config, "fields", []
+        )
+        if not required_fields:
+            return []
+
+        violations = []
+        for model in context.manifest_data.models.values():
+            if context.governance_config.is_path_excluded(model.file_path):
+                continue
+            missing = [f for f in required_fields if not model.meta.get(f)]
+            if missing:
+                violations.append(Violation(
+                    rule_id=self.rule_id,
+                    severity=severity,
+                    model_name=model.name,
+                    file_path=model.file_path,
+                    message=(
+                        f"Model '{model.name}' is missing required meta field(s): "
+                        f"{', '.join(missing)}"
+                    ),
+                    suggestion=(
+                        f"Add the missing fields to the model's meta block in schema YAML: "
+                        f"meta: {{{', '.join(f + ': ...' for f in missing)}}}"
+                    ),
+                ))
+        return violations

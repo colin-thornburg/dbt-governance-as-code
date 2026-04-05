@@ -168,6 +168,58 @@ textarea {
   line-height: 1;
 }
 
+/* ── Compact rules stat bar (replaces hero-panel) ─── */
+
+.rules-stat-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 14px;
+  border-radius: var(--radius-md);
+  backdrop-filter: blur(20px);
+  background: linear-gradient(180deg, var(--surface-strong), var(--surface));
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+}
+
+.rules-stat {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.78rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.rules-stat strong {
+  color: var(--ink);
+  font-weight: 600;
+  font-size: 0.82rem;
+}
+
+.rules-stat-total strong {
+  font-size: 0.86rem;
+}
+
+.rules-stat-divider {
+  width: 1px;
+  height: 13px;
+  background: var(--line-strong);
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+
+.stat-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.stat-dot-error   { background: var(--accent-red); }
+.stat-dot-warning { background: var(--accent-orange); }
+.stat-dot-info    { background: var(--accent-blue); }
+
 /* ── Workspace ────────────────────────────────────── */
 
 .workspace {
@@ -779,6 +831,18 @@ textarea {
 
 .info-icon-wrap:hover .info-tooltip {
   display: block;
+}
+
+/* Bottom bar tooltip: backdrop-filter on .bottom-bar creates a containing block,
+   so we override with position: fixed to escape the clipping context. */
+.bottom-bar .info-icon-wrap:hover .info-tooltip {
+  position: fixed;
+  bottom: 58px; /* sits just above the bottom bar */
+  left: 24px;
+  transform: none;
+}
+.bottom-bar .info-icon-wrap:hover .info-tooltip::after {
+  display: none; /* arrow doesn't align at fixed position */
 }
 
 /* Fixed-position popover (escapes overflow/backdrop-filter clipping) */
@@ -1562,14 +1626,17 @@ textarea {
     padding: 20px 14px 40px;
   }
 
-  .hero-panel,
   .form-grid,
   .rule-fields {
     grid-template-columns: 1fr;
   }
 
-  .panel,
-  .hero-panel {
+  .rules-stat-bar {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .panel {
     padding: 15px;
     border-radius: 18px;
   }
