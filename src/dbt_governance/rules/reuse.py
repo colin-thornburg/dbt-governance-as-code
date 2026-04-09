@@ -30,8 +30,6 @@ _SOURCE_PATTERN = re.compile(
     r"\{\{\s*source\s*\(\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]+)['\"]\s*\)\s*\}\}",
     re.IGNORECASE,
 )
-
-
 @dataclass(slots=True)
 class ModelSimilarityProfile:
     model_name: str
@@ -74,6 +72,9 @@ def _expr_name(node: exp.Expression | str | None) -> str | None:
         return None
     if isinstance(node, str):
         return node.lower()
+    if isinstance(node, exp.Table):
+        table_name = node.name
+        return table_name.lower() if table_name else None
     alias_or_name = getattr(node, "alias_or_name", None)
     if alias_or_name:
         return alias_or_name.lower()
@@ -99,6 +100,50 @@ def _jaccard(left: frozenset[str], right: frozenset[str]) -> float:
     if not left or not right:
         return 0.0
     return len(left & right) / len(left | right)
+
+
+def _normalized_sql_fragment(sql: str, *, strip_qualifiers: bool = False) -> str:
+    normalized = re.sub(r"\s+", " ", sql.strip()).lower()
+    return normalized
+
+
+def _normalized_expression_sql(node: exp.Expression, *, strip_qualifiers: bool = False) -> str:
+    expression = node.copy()
+
+    def _normalize(current: exp.Expression) -> exp.Expression:
+        if isinstance(current, exp.Table):
+            current.set("alias", None)
+            return current
+        if strip_qualifiers and isinstance(current, exp.Column):
+            return exp.column(current.name)
+        return current
+
+    expression = expression.transform(_normalize)
+    return _normalized_sql_fragment(
+        expression.sql(dialect="duckdb", pretty=False, normalize=True),
+    )
+
+
+def _root_select(parsed: exp.Expression) -> exp.Select | None:
+    if isinstance(parsed, exp.Select):
+        return parsed
+    return parsed.find(exp.Select)
+
+
+def _projection_expression(node: exp.Expression) -> exp.Expression:
+    return node.this if isinstance(node, exp.Alias) else node
+
+
+def _is_trivial_passthrough_select(select: exp.Select) -> bool:
+    if select.args.get("where") or select.args.get("group") or select.args.get("having"):
+        return False
+    if list(select.find_all(exp.Join)):
+        return False
+
+    projections = select.expressions or []
+    if not projections:
+        return False
+    return all(isinstance(_projection_expression(projection), exp.Column) for projection in projections)
 
 
 def _parse_similarity_profile(model_name: str, file_path: str, layer: str, sql: str) -> ModelSimilarityProfile | None:
@@ -132,7 +177,7 @@ def _parse_similarity_profile(model_name: str, file_path: str, layer: str, sql: 
             if table_name:
                 join_targets.add(table_name)
 
-    select = parsed.find(exp.Select)
+    select = _root_select(parsed)
     if select is not None:
         for projection in select.expressions:
             normalized = _normalized_select_name(projection)
@@ -661,24 +706,24 @@ class SharedCTECandidatesRule(BaseRule):
     # Minimum number of models that must share a CTE name to flag it
     _DEFAULT_MIN_OCCURRENCES = 3
 
-    # CTE names that are too generic to be meaningful (import boilerplate)
-    _SKIP_NAMES = frozenset({
-        "final", "base", "source", "raw", "renamed", "casted", "filtered",
-        "joined", "aggregated", "windowed", "pivoted", "unpivoted",
-        "orders", "customers", "payments",  # skip trivially common domain names
-    })
+    _DEFAULT_MIN_SQL_LENGTH = 48
 
     def evaluate(self, context: RuleContext) -> list[Violation]:
         severity = self.get_severity(context.governance_config)
         min_occurrences = self.get_rule_config_value(
             context.governance_config, "min_occurrences", self._DEFAULT_MIN_OCCURRENCES
         )
+        min_sql_length = int(
+            self.get_rule_config_value(
+                context.governance_config,
+                "min_sql_length",
+                self._DEFAULT_MIN_SQL_LENGTH,
+            )
+        )
         violations = []
 
-        cte_name_pattern = re.compile(r"(\w+)\s+as\s*\(", re.IGNORECASE)
-
-        # Map cte_name -> list of (model_name, file_path)
-        cte_occurrences: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        # Map normalized CTE body -> list of (model_name, file_path, cte_name)
+        cte_occurrences: dict[str, list[tuple[str, str, str]]] = defaultdict(list)
 
         for model in context.manifest_data.models.values():
             if context.governance_config.is_path_excluded(model.file_path):
@@ -687,45 +732,60 @@ class SharedCTECandidatesRule(BaseRule):
             if not sql:
                 continue
 
-            found_in_model: set[str] = set()
-            for match in cte_name_pattern.finditer(sql):
-                name = match.group(1).lower()
-                if name in self._SKIP_NAMES:
-                    continue
-                if name not in found_in_model:
-                    cte_occurrences[name].append((model.name, model.file_path))
-                    found_in_model.add(name)
+            try:
+                parsed = sqlglot.parse_one(_sanitize_sql_for_similarity(sql), read="duckdb")
+            except sqlglot.errors.ParseError:
+                continue
 
-        # Only flag CTEs that appear in enough models to suggest real duplication
-        already_flagged_models: set[str] = set()
-        for cte_name, occurrences in cte_occurrences.items():
+            found_in_model: set[str] = set()
+            for cte in parsed.find_all(exp.CTE):
+                cte_name = cte.alias_or_name.lower()
+                body = cte.this
+                body_select = _root_select(body)
+                if body_select is not None and _is_trivial_passthrough_select(body_select):
+                    continue
+
+                fingerprint = _normalized_expression_sql(body, strip_qualifiers=True)
+                if len(fingerprint) < min_sql_length or fingerprint in found_in_model:
+                    continue
+                cte_occurrences[fingerprint].append((model.name, model.file_path, cte_name))
+                found_in_model.add(fingerprint)
+
+        for fingerprint, occurrences in cte_occurrences.items():
             if len(occurrences) < min_occurrences:
                 continue
 
-            model_names = [o[0] for o in occurrences]
+            model_names = [occurrence[0] for occurrence in occurrences]
+            cte_names = sorted({occurrence[2] for occurrence in occurrences})
+            suggested_name = _shared_model_name(model_names, [])
 
-            for model_name, file_path in occurrences:
-                if model_name in already_flagged_models:
-                    continue
-                already_flagged_models.add(model_name)
-
-                others = [n for n in model_names if n != model_name]
-                violations.append(Violation(
-                    rule_id=self.rule_id,
-                    severity=severity,
-                    model_name=model_name,
-                    file_path=file_path,
-                    message=(
-                        f"CTE named '{cte_name}' appears in {len(occurrences)} models: "
-                        f"{', '.join(model_names[:5])}{'...' if len(model_names) > 5 else ''}. "
-                        "This suggests duplicated logic that should be a shared model."
-                    ),
-                    suggestion=(
-                        f"Extract the '{cte_name}' logic into a dedicated intermediate model "
-                        f"(e.g., int_{cte_name}_base.sql) and have the {len(occurrences)} models "
-                        "ref() it instead. This ensures consistent logic and a single place to update."
-                    ),
-                ))
+            for model_name, file_path, cte_name in occurrences:
+                others = [name for name in model_names if name != model_name]
+                violations.append(
+                    Violation(
+                        rule_id=self.rule_id,
+                        severity=severity,
+                        model_name=model_name,
+                        file_path=file_path,
+                        message=(
+                            f"Equivalent CTE logic appears in {len(occurrences)} models "
+                            f"under names such as {', '.join(cte_names[:4])}. "
+                            f"Models {', '.join(model_names[:5])}{'...' if len(model_names) > 5 else ''} "
+                            "are repeating the same intermediate transformation."
+                        ),
+                        suggestion=(
+                            f"Extract the shared CTE logic currently named '{cte_name}' into a dedicated "
+                            f"intermediate model such as '{suggested_name}.sql', then have "
+                            f"{', '.join(others[:4])}{' and others' if len(others) > 4 else ''} ref() it."
+                        ),
+                        details={
+                            "matching_models": model_names,
+                            "matching_cte_names": cte_names,
+                            "cte_fingerprint": fingerprint,
+                            "suggested_shared_model": f"{suggested_name}.sql",
+                        },
+                    )
+                )
         return violations
 
 
@@ -807,12 +867,7 @@ class IdenticalSelectColumnsRule(BaseRule):
         severity = self.get_severity(context.governance_config)
         violations = []
 
-        col_select_pattern = re.compile(
-            r"select\s+([\w\s,.*]+?)\s+from\s+\{\{\s*(?:ref|source)\s*\(['\"](\w+)['\"]",
-            re.IGNORECASE | re.DOTALL,
-        )
-
-        # Map (frozenset_of_columns, source_model) -> list of (model_name, file_path)
+        # Map (external_inputs, selected_columns, layer) -> list of (model_name, file_path)
         column_groups: dict[tuple, list[tuple[str, str]]] = defaultdict(list)
 
         for model in context.manifest_data.models.values():
@@ -822,32 +877,19 @@ class IdenticalSelectColumnsRule(BaseRule):
             if not sql:
                 continue
 
-            match = col_select_pattern.search(sql)
-            if not match:
+            profile = _parse_similarity_profile(model.name, model.file_path, model.layer, sql)
+            if profile is None or len(profile.selected_columns) < self._MIN_COLUMNS or not profile.inputs:
                 continue
 
-            col_text = match.group(1)
-            source_ref = match.group(2).lower()
-
-            # Parse column names — skip wildcards
-            if "*" in col_text:
-                continue
-            cols = frozenset(
-                c.strip().lower().split(".")[-1].split(" as ")[-1].strip()
-                for c in col_text.split(",")
-                if c.strip()
-            )
-            if len(cols) < self._MIN_COLUMNS:
-                continue
-
-            key = (cols, source_ref)
+            key = (profile.inputs, profile.selected_columns, profile.layer)
             column_groups[key].append((model.name, model.file_path))
 
-        for (cols, source_ref), models in column_groups.items():
+        for (inputs, cols, _layer), models in column_groups.items():
             if len(models) < 2:
                 continue
 
             model_names = [m[0] for m in models]
+            input_label = ", ".join(sorted(inputs)[:3])
             for model_name, file_path in models:
                 violations.append(Violation(
                     rule_id=self.rule_id,
@@ -856,13 +898,107 @@ class IdenticalSelectColumnsRule(BaseRule):
                     file_path=file_path,
                     message=(
                         f"Model '{model_name}' selects the same {len(cols)} columns from "
-                        f"'{source_ref}' as: {', '.join(n for n in model_names if n != model_name)}. "
+                        f"'{input_label}' as: {', '.join(n for n in model_names if n != model_name)}. "
                         "This is likely duplicated logic."
                     ),
                     suggestion=(
-                        f"Extract the shared column selection from '{source_ref}' into a "
+                        f"Extract the shared column selection from '{input_label}' into a "
                         "single intermediate model and ref() it from all consumers. "
                         "This ensures column aliasing and type casting are done once."
                     ),
+                    details={
+                        "shared_inputs": sorted(inputs),
+                        "shared_selected_columns": sorted(cols),
+                    },
                 ))
+        return violations
+
+
+@register_rule
+class DuplicateColumnDerivationsRule(BaseRule):
+    rule_id = "reuse.duplicate_column_derivations"
+    category = "reuse"
+    description = (
+        "The same non-trivial derived column expression appears in multiple models, "
+        "suggesting business logic should be centralized"
+    )
+    default_severity = Severity.INFO
+
+    _DEFAULT_MIN_OCCURRENCES = 3
+
+    def evaluate(self, context: RuleContext) -> list[Violation]:
+        severity = self.get_severity(context.governance_config)
+        min_occurrences = int(
+            self.get_rule_config_value(
+                context.governance_config,
+                "min_occurrences",
+                self._DEFAULT_MIN_OCCURRENCES,
+            )
+        )
+        derivations: dict[tuple[str, str, str], list[tuple[str, str]]] = defaultdict(list)
+        violations: list[Violation] = []
+
+        for model in context.manifest_data.models.values():
+            if context.governance_config.is_path_excluded(model.file_path):
+                continue
+            sql = model.raw_code or context.sql_files.get(model.file_path, "")
+            if not sql:
+                continue
+
+            try:
+                parsed = sqlglot.parse_one(_sanitize_sql_for_similarity(sql), read="duckdb")
+            except sqlglot.errors.ParseError:
+                continue
+
+            select = _root_select(parsed)
+            if select is None:
+                continue
+
+            seen_in_model: set[tuple[str, str, str]] = set()
+            for projection in select.expressions:
+                alias = _normalized_select_name(projection)
+                expression = _projection_expression(projection)
+                if not alias or isinstance(expression, (exp.Column, exp.Literal)):
+                    continue
+
+                fingerprint = _normalized_expression_sql(expression, strip_qualifiers=True)
+                key = (model.layer, alias, fingerprint)
+                if key in seen_in_model:
+                    continue
+                derivations[key].append((model.name, model.file_path))
+                seen_in_model.add(key)
+
+        for (layer, alias, fingerprint), occurrences in derivations.items():
+            if len(occurrences) < min_occurrences:
+                continue
+
+            model_names = [model_name for model_name, _ in occurrences]
+            suggested_name = f"int_{alias}_shared.sql"
+            for model_name, file_path in occurrences:
+                others = [name for name in model_names if name != model_name]
+                violations.append(
+                    Violation(
+                        rule_id=self.rule_id,
+                        severity=severity,
+                        model_name=model_name,
+                        file_path=file_path,
+                        message=(
+                            f"Derived column '{alias}' uses the same logic in {len(occurrences)} "
+                            f"{layer} models: {', '.join(model_names[:5])}{'...' if len(model_names) > 5 else ''}. "
+                            "This is a strong signal of duplicated business logic."
+                        ),
+                        suggestion=(
+                            f"Centralize the '{alias}' derivation in a shared upstream model or macro. "
+                            f"A good starting point is '{suggested_name}', then keep only truly distinct "
+                            f"downstream logic in {', '.join(others[:4])}{' and others' if len(others) > 4 else ''}."
+                        ),
+                        details={
+                            "derived_column_alias": alias,
+                            "derived_expression": fingerprint,
+                            "matching_models": model_names,
+                            "suggested_shared_model": suggested_name,
+                        },
+                    )
+                )
+
         return violations

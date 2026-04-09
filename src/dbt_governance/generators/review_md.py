@@ -13,6 +13,8 @@ RULE_CATEGORIES = (
     "documentation",
     "materialization",
     "style",
+    "migration",
+    "reuse",
     "ai_review",
 )
 

@@ -479,11 +479,17 @@ reuse:
       severity: info
       min_cluster_size: 3
       description: "Groups of highly similar models should converge on one shared intermediate"
+    duplicate_column_derivations:
+      enabled: true
+      severity: info
+      min_occurrences: 3
+      description: "The same derived column expression appears in multiple models"
     shared_cte_candidates:
       enabled: true
       severity: info
       min_occurrences: 3
-      description: "Same CTE name appears in 3+ models — candidate for shared intermediate model"
+      min_sql_length: 48
+      description: "Equivalent CTE logic appears in 3+ models — candidate for shared intermediate model"
     multiple_models_from_same_source:
       enabled: true
       severity: warning

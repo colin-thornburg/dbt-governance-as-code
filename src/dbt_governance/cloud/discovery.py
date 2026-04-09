@@ -141,6 +141,19 @@ query GovernanceExposures($environmentId: BigInt!, $first: Int!, $after: String)
 }
 """
 
+LINEAGE_QUERY = """\
+query GovernanceLineage($environmentId: BigInt!) {
+  environment(id: $environmentId) {
+    applied {
+      lineage(filter: { types: ["Model"] }) {
+        uniqueId
+        parentIds
+      }
+    }
+  }
+}
+"""
+
 PAGE_SIZE = 500
 
 
@@ -175,15 +188,32 @@ class DiscoveryClient:
 
         return all_nodes
 
+    async def _fetch_lineage(self, env_id: int) -> list[dict]:
+        """Fetch direct model lineage edges from the Discovery API."""
+        data = await self.http.graphql(
+            self.api_url,
+            LINEAGE_QUERY,
+            {"environmentId": env_id},
+        )
+        applied = data.get("environment", {}).get("applied", {})
+        return applied.get("lineage", []) or []
+
     async def fetch_manifest_data(self, environment_id: int, account_id: int) -> ManifestData:
         """Fetch all project metadata from the Discovery API and build a ManifestData."""
         raw_models = await self._paginate(MODELS_QUERY, environment_id, "models")
         raw_sources = await self._paginate(SOURCES_QUERY, environment_id, "sources")
         raw_exposures = await self._paginate(EXPOSURES_QUERY, environment_id, "exposures")
+        raw_lineage = await self._fetch_lineage(environment_id)
+
+        source_ids = {raw["uniqueId"] for raw in raw_sources}
+        model_ids = {raw["uniqueId"] for raw in raw_models}
+        direct_parent_ids_by_model = {
+            raw["uniqueId"]: list(raw.get("parentIds") or [])
+            for raw in raw_lineage
+        }
 
         models: dict[str, ModelNode] = {}
         dag_nodes: dict[str, list[str]] = {}
-        dag_children: dict[str, list[str]] = {}
 
         for raw in raw_models:
             uid = raw["uniqueId"]
@@ -197,17 +227,9 @@ class DiscoveryClient:
                     data_type=col.get("type"),
                 )
 
-            depends_models = []
-            depends_sources = []
-            ancestors = raw.get("ancestors") or []
-            for anc in ancestors:
-                rt = anc.get("resourceType", "")
-                if rt == "model":
-                    depends_models.append(anc["uniqueId"])
-                elif rt == "source":
-                    depends_sources.append(anc["uniqueId"])
-
-            child_ids = [c["uniqueId"] for c in (raw.get("children") or [])]
+            direct_parent_ids = direct_parent_ids_by_model.get(uid, [])
+            depends_models = [parent_id for parent_id in direct_parent_ids if parent_id in model_ids]
+            depends_sources = [parent_id for parent_id in direct_parent_ids if parent_id in source_ids]
 
             tests: list[TestInfo] = []
             for t in raw.get("tests") or []:
@@ -249,13 +271,11 @@ class DiscoveryClient:
                 access=raw.get("access"),
                 group=raw.get("group"),
                 execution_info=execution_info,
-                children=child_ids,
             )
             model.layer = model.infer_layer()
             models[uid] = model
 
             dag_nodes[uid] = depends_models + depends_sources
-            dag_children[uid] = child_ids
 
         sources: dict[str, SourceNode] = {}
         for raw in raw_sources:
@@ -278,6 +298,16 @@ class DiscoveryClient:
                 meta=raw.get("meta") or {},
             )
             dag_nodes.setdefault(uid, [])
+
+        dag_children: dict[str, list[str]] = {uid: [] for uid in [*models.keys(), *sources.keys()]}
+        for uid, parent_ids in dag_nodes.items():
+            for parent_id in parent_ids:
+                dag_children.setdefault(parent_id, [])
+                if uid not in dag_children[parent_id]:
+                    dag_children[parent_id].append(uid)
+
+        for uid, model in models.items():
+            model.children = dag_children.get(uid, [])
 
         exposures: dict[str, ExposureNode] = {}
         for raw in raw_exposures:

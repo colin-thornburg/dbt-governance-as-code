@@ -23,6 +23,7 @@ def test_generate_review_md_groups_rules_by_severity():
     assert "# dbt Governance Review Rules" in content
     assert "## Always Check (Error)" in content
     assert "Staging models must follow stg_<source>__<entity> naming" in content
+    assert "Repeated CTE logic should be extracted into shared intermediate models" in content
     assert "## Scope" in content
     assert "Skip these paths: dbt_packages/, target/" in content
 

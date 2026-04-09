@@ -5,8 +5,11 @@ from __future__ import annotations
 from dbt_governance.cloud.models import DAG, ManifestData, ModelNode
 from dbt_governance.config import GovernanceConfig, Severity
 from dbt_governance.rules.base import RuleContext, Violation
+from dbt_governance.rules.reuse import DuplicateColumnDerivationsRule
+from dbt_governance.rules.reuse import IdenticalSelectColumnsRule
 from dbt_governance.scanner import _build_reuse_report
 from dbt_governance.rules.reuse import ModelSimilarityCandidatesRule, ModelSimilarityClustersRule
+from dbt_governance.rules.reuse import SharedCTECandidatesRule
 
 
 def _model(
@@ -456,3 +459,227 @@ def test_reuse_report_prioritizes_clusters_and_filters_covered_pairs():
     assert report.total_recommendations == 2
     assert report.prioritized_actions[0].recommendation_type == "cluster"
     assert report.remaining_pairs[0].primary_model_name == "int_customer_health_a"
+
+
+def test_shared_cte_candidates_flags_equivalent_cte_logic_with_different_names():
+    model_a = _model(
+        "model.test.int_orders_enriched_a",
+        "int_orders_enriched_a",
+        "models/intermediate/int_orders_enriched_a.sql",
+        """
+with filtered_orders as (
+    select
+        order_id,
+        customer_id,
+        order_total
+    from {{ ref('stg_orders') }}
+    where order_total > 0
+)
+select
+    order_id,
+    customer_id,
+    order_total
+from filtered_orders
+""",
+        ["model.test.stg_orders"],
+    )
+    model_b = _model(
+        "model.test.int_orders_enriched_b",
+        "int_orders_enriched_b",
+        "models/intermediate/int_orders_enriched_b.sql",
+        """
+with positive_orders as (
+    select
+        src.order_id,
+        src.customer_id,
+        src.order_total
+    from {{ ref('stg_orders') }} as src
+    where src.order_total > 0
+)
+select
+    order_id,
+    customer_id,
+    order_total
+from positive_orders
+""",
+        ["model.test.stg_orders"],
+    )
+    model_c = _model(
+        "model.test.int_orders_enriched_c",
+        "int_orders_enriched_c",
+        "models/intermediate/int_orders_enriched_c.sql",
+        """
+with orders_ready as (
+    select
+        o.order_id,
+        o.customer_id,
+        o.order_total
+    from {{ ref('stg_orders') }} as o
+    where o.order_total > 0
+)
+select
+    order_id,
+    customer_id,
+    order_total
+from orders_ready
+""",
+        ["model.test.stg_orders"],
+    )
+
+    manifest = ManifestData(
+        models={
+            model_a.unique_id: model_a,
+            model_b.unique_id: model_b,
+            model_c.unique_id: model_c,
+        },
+        dag=DAG(),
+    )
+    context = RuleContext(manifest_data=manifest, governance_config=GovernanceConfig())
+
+    violations = SharedCTECandidatesRule().evaluate(context)
+
+    assert len(violations) == 3
+    assert all("Equivalent CTE logic appears" in violation.message for violation in violations)
+    assert all(
+        set(violation.details["matching_cte_names"]) == {"filtered_orders", "orders_ready", "positive_orders"}
+        for violation in violations
+    )
+    assert all(violation.details["suggested_shared_model"].endswith(".sql") for violation in violations)
+
+
+def test_identical_select_columns_groups_same_inputs_and_columns():
+    model_a = _model(
+        "model.test.int_customer_projection_a",
+        "int_customer_projection_a",
+        "models/intermediate/int_customer_projection_a.sql",
+        """
+with customers as (
+    select
+        customer_id,
+        first_name,
+        last_name,
+        email,
+        country,
+        created_at
+    from {{ ref('stg_customers') }}
+)
+select
+    customer_id,
+    first_name,
+    last_name,
+    email,
+    country,
+    created_at
+from customers
+""",
+        ["model.test.stg_customers"],
+    )
+    model_b = _model(
+        "model.test.int_customer_projection_b",
+        "int_customer_projection_b",
+        "models/intermediate/int_customer_projection_b.sql",
+        """
+with base_rows as (
+    select
+        c.customer_id,
+        c.first_name,
+        c.last_name,
+        c.email,
+        c.country,
+        c.created_at
+    from {{ ref('stg_customers') }} as c
+)
+select
+    customer_id,
+    first_name,
+    last_name,
+    email,
+    country,
+    created_at
+from base_rows
+""",
+        ["model.test.stg_customers"],
+    )
+
+    manifest = ManifestData(
+        models={model_a.unique_id: model_a, model_b.unique_id: model_b},
+        dag=DAG(),
+    )
+    context = RuleContext(manifest_data=manifest, governance_config=GovernanceConfig())
+
+    violations = IdenticalSelectColumnsRule().evaluate(context)
+
+    assert len(violations) == 2
+    assert all("same 6 columns" in violation.message for violation in violations)
+    assert all(violation.details["shared_inputs"] == ["ref_stg_customers"] for violation in violations)
+
+
+def test_duplicate_column_derivations_flags_repeated_business_logic():
+    model_a = _model(
+        "model.test.fct_orders_a",
+        "fct_orders_a",
+        "models/marts/fct_orders_a.sql",
+        """
+select
+    order_id,
+    case
+        when order_total >= 1000 then 'enterprise'
+        when order_total >= 250 then 'growth'
+        else 'self_serve'
+    end as revenue_band
+from {{ ref('stg_orders') }}
+""",
+        ["model.test.stg_orders"],
+        layer="marts",
+    )
+    model_b = _model(
+        "model.test.fct_orders_b",
+        "fct_orders_b",
+        "models/marts/fct_orders_b.sql",
+        """
+select
+    o.order_id,
+    case
+        when o.order_total >= 1000 then 'enterprise'
+        when o.order_total >= 250 then 'growth'
+        else 'self_serve'
+    end as revenue_band
+from {{ ref('stg_orders') }} as o
+""",
+        ["model.test.stg_orders"],
+        layer="marts",
+    )
+    model_c = _model(
+        "model.test.fct_orders_c",
+        "fct_orders_c",
+        "models/marts/fct_orders_c.sql",
+        """
+select
+    order_id,
+    case
+        when order_total >= 1000 then 'enterprise'
+        when order_total >= 250 then 'growth'
+        else 'self_serve'
+    end as revenue_band
+from {{ ref('stg_orders') }}
+""",
+        ["model.test.stg_orders"],
+        layer="marts",
+    )
+
+    manifest = ManifestData(
+        models={
+            model_a.unique_id: model_a,
+            model_b.unique_id: model_b,
+            model_c.unique_id: model_c,
+        },
+        dag=DAG(),
+    )
+    context = RuleContext(manifest_data=manifest, governance_config=GovernanceConfig())
+
+    violations = DuplicateColumnDerivationsRule().evaluate(context)
+
+    assert len(violations) == 3
+    assert all("Derived column 'revenue_band'" in violation.message for violation in violations)
+    assert all(violation.details["derived_column_alias"] == "revenue_band" for violation in violations)
+    assert all("case when order_total >= 1000" in violation.details["derived_expression"] for violation in violations)

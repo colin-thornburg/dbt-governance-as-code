@@ -90,6 +90,16 @@ This is the right experience for:
 - **Cloud mode**: on-demand audits, sandbox validation, production posture checks
 - **Local mode**: pre-merge CI, changed-files-only scans, fixture-repo PR automation
 
+### Cloud lineage accuracy
+
+In **Cloud mode**, the scanner now uses the dbt Cloud Discovery API's direct `lineage.parentIds` graph to build model/source dependencies. That is important for re-use and structure checks, because rules such as `duplicate_source_staging` and `multiple_models_from_same_source` need **direct parents**, not all transitive ancestors.
+
+In practical terms:
+
+- a model that depends on `int_orders` is **not** treated as directly reading the raw `orders` source just because that source is somewhere upstream
+- source-consumer counts in the re-use report are based on direct lineage edges
+- Cloud mode behavior now matches local `manifest.json` mode much more closely for dependency-driven rules
+
 ---
 
 ## Rule categories
@@ -104,10 +114,10 @@ This is the right experience for:
 | **Style** | CTE patterns, no `SELECT *` in marts, final SELECT from named CTE, no hardcoded schemas |
 | **Governance** | Meta-governance hygiene — config completeness, version pinning |
 | **Migration** | Legacy ETL anti-patterns: hardcoded schemas, DDL statements, no `ref()`/`source()` calls, missing source definitions, no layer structure |
-| **Re-use** | Duplicate source staging, shared CTE candidates, multiple models from the same source, identical SELECT column sets, pairwise model similarity scoring, multi-model cluster detection |
+| **Re-use** | Duplicate source staging, repeated derived columns, shared CTE logic candidates, multiple models from the same source, identical SELECT column sets, pairwise model similarity scoring, multi-model cluster detection |
 | **AI Review** | Semantic review of model SQL and YAML using a configured LLM — flags business logic in staging, missing grain documentation, and other patterns deterministic rules can't catch |
 
-The re-use category includes model-level similarity scoring so the scanner can flag pairs and clusters of structurally similar models even when they are not literal copy-pastes. The JSON scan output includes a dedicated `reuse_report` section with ranked actions grouped into clusters first and strongest remaining pairs second, so governance teams can work from an explicit remediation queue.
+The re-use category includes model-level similarity scoring so the scanner can flag pairs and clusters of structurally similar models even when they are not literal copy-pastes. It also now detects repeated non-trivial derived columns and fingerprints equivalent CTE bodies even when teams renamed the local CTEs. The JSON scan output includes a dedicated `reuse_report` section with ranked actions grouped into clusters first and strongest remaining pairs second, so governance teams can work from an explicit remediation queue.
 
 ---
 
@@ -573,7 +583,7 @@ Rules it triggers:
 |---|---|
 | `stg_orders` + `stg_orders_v2` | `duplicate_source_staging` — two staging models reference the same source |
 | `int_orders_daily/weekly/monthly` | `model_similarity_candidates` + `model_similarity_clusters` — three near-identical intermediate models |
-| `int_orders_daily/weekly/monthly` | `shared_cte_candidates` — `active_orders` CTE duplicated across 3 models |
+| `int_orders_daily/weekly/monthly` | `shared_cte_candidates` — equivalent CTE logic duplicated across 3 models |
 | `int_payment_analysis` + `fct_revenue` | `multiple_models_from_same_source` — non-staging models bypass the staging layer |
 | `fct_orders` + `fct_orders_v2` | `identical_select_columns` — same 6-column projection from the same ref |
 

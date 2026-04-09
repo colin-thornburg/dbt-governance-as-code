@@ -164,6 +164,12 @@ Why this is the best PR experience:
 - **Cloud mode**: live environment validation, sandbox scanning, production audits
 - **Local mode**: PR validation, changed-files-only scans, fixture-repo automation
 
+### Direct lineage in Cloud mode
+
+For dependency-sensitive rules, the scanner must distinguish between **direct parents** and **transitive ancestors**. This matters most for the re-use and structure categories, where the question is often "does this model read this source directly?" rather than "is this source somewhere upstream in the DAG?"
+
+Cloud mode now builds its dependency graph from the Discovery API's direct `lineage.parentIds` edges, not from `ancestors`. That keeps rules such as `reuse.duplicate_source_staging`, `reuse.multiple_models_from_same_source`, `structure.staging_refs_source_only`, and `structure.marts_no_source_refs` aligned with local `manifest.json` behavior. A downstream mart is no longer counted as a direct consumer of a source just because that source is part of its broader ancestry.
+
 ---
 
 ## Frontend Architecture: Central Governance UI
@@ -271,8 +277,9 @@ Re-use detection is not about code style. It is about identifying structural dup
 |---|---|---|
 | **Model-level similarity scoring** | Two models have highly similar inputs, selected columns, joins, filters, and aggregation shape even if their CTE names differ | Extract the shared logic into a reusable intermediate and keep only the genuinely divergent downstream logic in each model |
 | **Similarity clusters** | Three or more models form a connected similarity group, indicating one shared intermediate should replace several parallel branches | Build a single shared intermediate for the common logic, then reduce each cluster member to only its unique downstream logic |
+| **Repeated derived columns** | The same non-trivial derived column expression (for example a CASE bucket or normalization formula) appears in multiple models | Move the derivation into a shared upstream model or macro so the logic changes in one place |
 | **Duplicate source staging** | Two or more staging models both reference the same source table as their primary input | Delete the duplicates; all downstream models should `ref()` the canonical staging model |
-| **Duplicate CTE names across models** | The same CTE name (e.g., `customers`, `paid_orders`, `active_subscriptions`) appears in 3+ separate models with similar structure | Extract the CTE into a shared intermediate model; downstream models `ref()` it |
+| **Duplicate CTE logic across models** | Equivalent CTE SQL appears in 3+ separate models even if the local CTE names differ | Extract the repeated transformation into a shared intermediate model; downstream models `ref()` it |
 | **Multiple non-staging models reading the same source** | Mart or intermediate models bypass the staging layer and read directly from the same raw source table | Enforce a single staging model as the entry point; marts should `ref()` staging, not `source()` directly |
 | **Identical column selections from the same base** | Multiple models select the same set of columns from the same upstream model or source | Candidate for a shared base model that both reference |
 
@@ -280,17 +287,22 @@ Re-use detection is not about code style. It is about identifying structural dup
 
 The re-use rules operate on the `ManifestData` graph produced by the scanner:
 
+For Cloud-mode scans, the dependency-driven rules below use the Discovery API's **direct lineage edges** (`lineage.parentIds`) rather than transitive `ancestors`, so source-consumer counts and direct-source-read findings stay precise.
+
 **`reuse.model_similarity_candidates`**
 Builds a structural profile for each model using normalized SQL parsing: inputs, selected columns, joins, filters, grouping, aggregates, and CTE names. It then computes a weighted similarity score between same-layer models. Pairs above a configurable threshold are surfaced as consolidation candidates even when they do not use the same CTE names or formatting. Each finding now carries structured pairwise details: the similarity score, a confidence band (`high`, `medium`, `low`), the paired model, the shared inputs/columns/aggregates/filters, and a suggested shared intermediate name.
 
 **`reuse.model_similarity_clusters`**
 Builds a similarity graph from the pairwise model matches, then finds connected groups of models that all overlap strongly enough to be treated as one consolidation opportunity. Instead of asking a governance team to look at six separate pairwise findings, it can now say "these 4 models form one reuse cluster." Each finding includes the cluster members, average and peak similarity, the strongest example links, common inputs/columns/filters, and a suggested shared intermediate model name.
 
+**`reuse.duplicate_column_derivations`**
+Builds fingerprints for non-trivial derived columns in the top-level `SELECT` of each model. When the same derived column alias and expression appear repeatedly within a layer, it flags them as centralized-business-logic candidates. This is aimed at repeated CASE buckets, normalization formulas, and KPI derivations that often sprawl across marts after independent legacy migrations.
+
 **`reuse.duplicate_source_staging`**
 Iterates all staging models and builds a map of `source_table → [staging_models]`. Any source table that maps to more than one staging model is flagged. Each duplicate staging model gets a violation with a suggestion identifying the canonical model and the models that should be removed.
 
 **`reuse.shared_cte_candidates`**
-Iterates all SQL files and extracts top-level CTE names via `sqlglot`. Builds a map of `cte_name → [models_containing_it]`. Any CTE name appearing in `min_occurrences` or more models (default: 3) is flagged. The violation names all models that share the CTE and suggests extracting it into a shared intermediate.
+Iterates all SQL files and fingerprints each non-trivial CTE body via `sqlglot`. It groups by normalized SQL shape rather than by CTE name, so `filtered_orders`, `positive_orders`, and `orders_ready` can still be recognized as the same repeated transformation. Any repeated CTE body appearing in `min_occurrences` or more models (default: 3) is flagged.
 
 **`reuse.multiple_models_from_same_source`**
 Scans the DAG for `source()` references. Any source node that has more than one non-staging model as a direct consumer is flagged. The intent: non-staging models should consume from a staging model, not compete to read the same source independently.
@@ -338,6 +350,11 @@ reuse:
       severity: info
       min_cluster_size: 3   # Minimum group size before emitting a cluster recommendation
 
+    duplicate_column_derivations:
+      enabled: true
+      severity: info
+      min_occurrences: 3   # Same derived column expression must appear in N models
+
     duplicate_source_staging:
       enabled: true
       severity: warning
@@ -345,7 +362,8 @@ reuse:
     shared_cte_candidates:
       enabled: true
       severity: info
-      min_occurrences: 3    # How many models must share a CTE name before flagging
+      min_occurrences: 3    # How many models must share equivalent CTE logic before flagging
+      min_sql_length: 48    # Ignore tiny or trivial CTEs
 
     multiple_models_from_same_source:
       enabled: true
