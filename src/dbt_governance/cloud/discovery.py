@@ -145,7 +145,7 @@ LINEAGE_QUERY = """\
 query GovernanceLineage($environmentId: BigInt!) {
   environment(id: $environmentId) {
     applied {
-      lineage(filter: { types: ["Model"] }) {
+      lineage(filter: { types: [Model] }) {
         uniqueId
         parentIds
       }
@@ -161,7 +161,8 @@ class DiscoveryClient:
     """GraphQL client for the dbt Cloud Discovery API."""
 
     def __init__(self, api_url: str, http_client: CloudHTTPClient):
-        self.api_url = api_url
+        # Normalize: append /graphql if not already present
+        self.api_url = api_url.rstrip("/") + "/graphql" if not api_url.rstrip("/").endswith("/graphql") else api_url
         self.http = http_client
 
     async def _paginate(self, query: str, env_id: int, resource_key: str) -> list[dict]:
@@ -200,6 +201,14 @@ class DiscoveryClient:
 
     async def fetch_manifest_data(self, environment_id: int, account_id: int) -> ManifestData:
         """Fetch all project metadata from the Discovery API and build a ManifestData."""
+        if not self.api_url:
+            raise RuntimeError(
+                "Discovery API URL is not configured.\n\n"
+                "Find your account-specific URL in dbt Cloud → Account Settings → Access URLs.\n"
+                "Expected format: https://<account-prefix>.metadata.<region>.dbt.com\n"
+                "  Regions: us1 (NA), eu1 (EMEA), jp1 (Japan), au1 (APAC)\n\n"
+                "Set it via DBT_CLOUD_DISCOVERY_API_URL or discovery_api_url in your config."
+            )
         raw_models = await self._paginate(MODELS_QUERY, environment_id, "models")
         raw_sources = await self._paginate(SOURCES_QUERY, environment_id, "sources")
         raw_exposures = await self._paginate(EXPOSURES_QUERY, environment_id, "exposures")

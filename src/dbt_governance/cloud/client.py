@@ -71,7 +71,20 @@ class CloudHTTPClient:
                             )
                     raise RuntimeError(f"GraphQL errors: {errors}")
                 return data.get("data", {})
-            except (httpx.HTTPStatusError, httpx.ConnectError) as e:
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 400:
+                    try:
+                        body = e.response.text[:1000]
+                    except Exception:
+                        body = "(could not read response body)"
+                    raise RuntimeError(
+                        f"Discovery API returned 400 Bad Request for {url}\n"
+                        f"Response: {body}"
+                    ) from e
+                last_error = e
+                if attempt < MAX_RETRIES - 1:
+                    continue
+            except httpx.ConnectError as e:
                 last_error = e
                 if attempt < MAX_RETRIES - 1:
                     continue

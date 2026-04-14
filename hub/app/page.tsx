@@ -2945,8 +2945,10 @@ jobs:
                   <span>Discovery API URL</span>
                   <input
                     value={config.dbt_cloud.discovery_api_url}
+                    placeholder="https://<account-prefix>.metadata.us1.dbt.com"
                     onChange={(e) => updateConfig((next) => { next.dbt_cloud.discovery_api_url = e.target.value; })}
                   />
+                  <span className="field-hint">Find this in dbt Cloud → Account Settings → Access URLs. Regions: us1 (NA), eu1 (EMEA), jp1 (Japan), au1 (APAC)</span>
                 </label>
                 <label>
                   <span>State type</span>

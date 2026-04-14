@@ -138,7 +138,7 @@ class DbtCloudConfig(BaseModel):
     account_id: int | None = None
     environment_id: int | None = None
     api_base_url: str = "https://cloud.getdbt.com"
-    discovery_api_url: str = "https://metadata.cloud.getdbt.com/graphql"
+    discovery_api_url: str = ""
     state_type: str = "applied"
     include_catalog: bool = True
     include_execution_info: bool = True
@@ -161,7 +161,7 @@ class DbtCloudConfig(BaseModel):
         if os.environ.get("DBT_CLOUD_URL") and self.api_base_url == "https://cloud.getdbt.com":
             self.api_base_url = os.environ["DBT_CLOUD_URL"].rstrip("/")
 
-        if os.environ.get("DBT_CLOUD_DISCOVERY_API_URL") and self.discovery_api_url == "https://metadata.cloud.getdbt.com/graphql":
+        if os.environ.get("DBT_CLOUD_DISCOVERY_API_URL") and not self.discovery_api_url:
             self.discovery_api_url = os.environ["DBT_CLOUD_DISCOVERY_API_URL"]
 
         # Auto-enable when account_id is available and nothing explicitly set enabled=False
@@ -272,11 +272,9 @@ dbt_cloud:
   enabled: false
   # account_id: 12345
   # environment_id: 67890
-  # discovery_api_url: "https://metadata.cloud.getdbt.com/graphql"
-  # Regions:
-  #   NA:   https://metadata.cloud.getdbt.com/graphql
-  #   EMEA: https://metadata.emea.dbt.com/graphql
-  #   APAC: https://metadata.au.dbt.com/graphql
+  # discovery_api_url: "https://<account-prefix>.metadata.us1.dbt.com"
+  # Find your Discovery API URL in dbt Cloud: Account Settings → Access URLs
+  # Regions: us1 (NA), eu1 (EMEA), jp1 (Japan), au1 (APAC)
 
 global:
   severity_default: warning

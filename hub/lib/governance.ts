@@ -435,10 +435,10 @@ export const defaultGovernanceConfig: GovernanceConfig = {
   },
   dbt_cloud: {
     enabled: true,
-    account_id: 0,
+    account_id: 257364,
     environment_id: 0,
-    api_base_url: "https://cloud.getdbt.com",
-    discovery_api_url: "https://metadata.cloud.getdbt.com/graphql",
+    api_base_url: "https://cv060.us1.dbt.com",
+    discovery_api_url: "https://cv060.metadata.us1.dbt.com",
     state_type: "applied",
     include_catalog: true,
     include_execution_info: true
@@ -823,6 +823,15 @@ export function generateYaml(config: GovernanceConfig): string {
   const scannerConfig: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(config)) {
     if (key === "ai_provider") continue;
+    if (key === "dbt_cloud" && value && typeof value === "object") {
+      const cloud = { ...(value as Record<string, unknown>) };
+      if (typeof cloud.discovery_api_url === "string" && cloud.discovery_api_url) {
+        const base = cloud.discovery_api_url.replace(/\/+$/, "");
+        cloud.discovery_api_url = base.endsWith("/graphql") ? base : `${base}/graphql`;
+      }
+      scannerConfig[key] = cloud;
+      continue;
+    }
     scannerConfig[key] = value;
   }
 
